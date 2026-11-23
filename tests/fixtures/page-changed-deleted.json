@@ -1,0 +1,5 @@
+{"jsonrpc": "2.0", "id": "4", "method": "page/changed", "params": {
+  "page": {"id": "page-1", "widthPt": 595.28, "heightPt": 841.89},
+  "changed": [],
+  "deleted": ["shape-c2"],
+  "own": ["OWN"]}}

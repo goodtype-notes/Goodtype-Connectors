@@ -1,0 +1,18 @@
+{"type": "shape", "id": "addon-0f3c9a", "x": 148, "y": 108, "rotation": 0, "scale": 1,
+ "zIndex": 4, "readingOrder": 4, "groupId": null,
+ "createdAt": "1795430000000", "modifiedAt": "1795430000000",
+ "geometry": {"kind": "spline", "closed": false, "nodes": [
+   {"point": {"x": 0, "y": 0}, "handleIn": null, "handleOut": null},
+   {"point": {"x": 76, "y": 0}, "handleIn": null, "handleOut": null},
+   {"point": {"x": 76, "y": 64}, "handleIn": null, "handleOut": null},
+   {"point": {"x": 152, "y": 64}, "handleIn": null, "handleOut": null}]},
+ "style": {"strokeColor": "#9b2c2c", "strokeWidthPt": 2.4, "fillColor": null, "opacity": 1},
+ "addonData": {"connectors": {"refs": ["shape-r1", "shape-c2"], "data": {
+   "routing": "orthogonal", "arrow": "none",
+   "start": {"objectId": "shape-r1", "port": 1}, "end": {"objectId": "shape-c2", "port": 0},
+   "startPoint": {"x": 148, "y": 108}, "endPoint": {"x": 300, "y": 172},
+   "bends": [],
+   "startSide": "right", "endSide": "left",
+   "startBounds": {"x": 100, "y": 100, "width": 48, "height": 16},
+   "endBounds": {"x": 300, "y": 160, "width": 24, "height": 24},
+   "origin": {"x": 148, "y": 108}}}}}

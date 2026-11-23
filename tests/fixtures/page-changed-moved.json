@@ -1,0 +1,8 @@
+{"jsonrpc": "2.0", "id": "3", "method": "page/changed", "params": {
+  "page": {"id": "page-1", "widthPt": 595.28, "heightPt": 841.89},
+  "changed": [
+    {"id": "shape-c2", "type": "group", "x": 300, "y": 240, "rotation": 0, "scale": 1,
+     "bounds": {"x": 300, "y": 240, "width": 24, "height": 24},
+     "ports": [{"x": 300, "y": 252}, {"x": 324, "y": 252}]}],
+  "deleted": [],
+  "own": ["OWN"]}}

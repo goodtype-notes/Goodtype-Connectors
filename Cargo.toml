@@ -1,0 +1,18 @@
+[package]
+name = "goodtype-connectors"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Goodtype addon: connectors that stay attached to parts"
+publish = false
+default-run = "goodtype-connectors"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+codegen-units = 1
+lto = true
+panic = "abort"
+strip = true

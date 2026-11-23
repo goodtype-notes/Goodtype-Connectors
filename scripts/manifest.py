@@ -41,6 +41,16 @@ def unique_ids(items):
     return ids
 
 
+def icon(value):
+    keys(value, "paths")
+    paths = value["paths"]
+    require(isinstance(paths, list) and 1 <= len(paths) <= 8, "An icon has 1–8 paths")
+    for path in paths:
+        require(isinstance(path, str) and 0 < len(path) <= 512 and ICON.fullmatch(path),
+                f"Invalid icon path: {path!r}")
+    require(sum(len(p) for p in paths) <= 2048, "Icon exceeds 2 KiB")
+
+
 def setting(value, labels):
     kind = value.get("type")
     if kind == "toggle":
@@ -53,7 +63,9 @@ def setting(value, labels):
         require(isinstance(choices, list) and 2 <= len(choices) <= 8, "A choice needs 2–8 entries")
         values = []
         for choice in choices:
-            keys(choice, "value label")
+            keys(choice, "value label", "icon")
+            if "icon" in choice:
+                icon(choice["icon"])
             values.append(identifier(choice["value"]))
             labels.append(identifier(choice["label"]))
         require(len(set(values)) == len(values), "Duplicate choice value")
@@ -94,17 +106,12 @@ def validate(manifest_path=ROOT / "goodtype-addon.json", cargo_path=ROOT / "Carg
     require(isinstance(tools, list) and len(tools) <= 8, "At most 8 tools")
     unique_ids(tools)
     for tool in tools:
-        keys(tool, "id label icon kind snap settings")
+        keys(tool, "id label icon kind snap settings", "stroke")
         labels.append(identifier(tool["label"]))
         require(tool["kind"] in ("place", "connect", "frame") and tool["snap"] in ("ports", "none"),
                 "Invalid tool kind or snap")
-        keys(tool["icon"], "paths")
-        paths = tool["icon"]["paths"]
-        require(isinstance(paths, list) and 1 <= len(paths) <= 8, "An icon has 1–8 paths")
-        for path in paths:
-            require(isinstance(path, str) and 0 < len(path) <= 512 and ICON.fullmatch(path),
-                    f"Invalid icon path: {path!r}")
-        require(sum(len(p) for p in paths) <= 2048, "Icon exceeds 2 KiB")
+        icon(tool["icon"])
+        require(type(tool.get("stroke", False)) is bool, "Tool stroke must be a Boolean")
         require(all(s in setting_ids for s in tool["settings"]), "A tool names an undeclared setting")
     require(not tools or "own-objects" in permissions, "Tools require own-objects")
 

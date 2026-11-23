@@ -51,7 +51,7 @@ def sign(directory):
         fd = os.open(secret, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w", encoding="ascii") as stream:
             stream.write(os.environ["ADDON_SIGNING_KEY"])
-        output = tmp / "connectors-update.json"
+        output = tmp / "addon-update.json"
         output.write_text(json.dumps(descriptor, indent=2) + "\n", encoding="utf-8")
         signature = output.with_suffix(".json.sig")
         subprocess.run(["openssl", "pkeyutl", "-sign", "-rawin", "-inkey", str(secret),

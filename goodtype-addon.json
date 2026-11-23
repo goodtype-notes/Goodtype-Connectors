@@ -1,0 +1,76 @@
+{
+  "manifestVersion": 1,
+  "id": "connectors",
+  "version": "0.1.0",
+  "apiVersion": "goodtype-api 0.1",
+  "target": "x86_64-pc-windows-msvc",
+  "entrypoint": "goodtype-connectors.exe",
+  "transport": "stdio-jsonrpc",
+  "permissions": ["own-objects", "react-to-changes"],
+  "tools": [
+    {
+      "id": "connect",
+      "label": "tool-connect",
+      "icon": {"paths": ["M3 5h5v5H3z", "M16 14h5v5h-5z", "M8 7.5h4.5v9H16"]},
+      "kind": "connect",
+      "snap": "ports",
+      "settings": ["routing", "arrow"]
+    }
+  ],
+  "commands": [{"id": "change-routing", "label": "cmd-routing", "surface": "own-object"}],
+  "settings": [
+    {
+      "id": "routing",
+      "label": "routing",
+      "hint": "routing-hint",
+      "type": "choice",
+      "default": "orthogonal",
+      "choices": [
+        {"value": "straight", "label": "routing-straight"},
+        {"value": "curved", "label": "routing-curved"},
+        {"value": "orthogonal", "label": "routing-orthogonal"}
+      ]
+    },
+    {
+      "id": "arrow",
+      "label": "arrow",
+      "type": "choice",
+      "default": "none",
+      "choices": [
+        {"value": "none", "label": "arrow-none"},
+        {"value": "end", "label": "arrow-end"},
+        {"value": "both", "label": "arrow-both"}
+      ]
+    }
+  ],
+  "strings": {
+    "en": {
+      "name": "Connectors",
+      "tool-connect": "Connect",
+      "cmd-routing": "Change routing",
+      "routing": "Routing",
+      "routing-hint": "How a new connector runs between two parts",
+      "routing-straight": "Straight",
+      "routing-curved": "Curved",
+      "routing-orthogonal": "Right-angled",
+      "arrow": "Arrowheads",
+      "arrow-none": "None",
+      "arrow-end": "At the end",
+      "arrow-both": "At both ends"
+    },
+    "de": {
+      "name": "Verbinder",
+      "tool-connect": "Verbinden",
+      "cmd-routing": "Linienführung ändern",
+      "routing": "Linienführung",
+      "routing-hint": "Wie ein neuer Verbinder zwischen zwei Teilen verläuft",
+      "routing-straight": "Gerade",
+      "routing-curved": "Gebogen",
+      "routing-orthogonal": "Rechtwinklig",
+      "arrow": "Pfeilspitzen",
+      "arrow-none": "Keine",
+      "arrow-end": "Am Ende",
+      "arrow-both": "An beiden Enden"
+    }
+  }
+}

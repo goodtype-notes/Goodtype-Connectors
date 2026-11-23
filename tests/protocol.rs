@@ -132,9 +132,20 @@ impl FakeHost {
     fn check_style(style: &Value) -> Result<f64, String> {
         keys(
             style,
-            &["strokeColor", "strokeWidthPt", "fillColor", "opacity"],
-            &["pattern", "patternSpacing", "patternOffsetPt"],
+            &[],
+            &[
+                "strokeColor",
+                "strokeWidthPt",
+                "fillColor",
+                "opacity",
+                "pattern",
+                "patternSpacing",
+                "patternOffsetPt",
+            ],
         )?;
+        if style.get("strokeWidthPt").is_none() {
+            return Ok(1.6);
+        }
         style["strokeWidthPt"]
             .as_f64()
             .filter(|w| *w > 0.0 && *w <= 256.0)
@@ -291,10 +302,7 @@ fn tool_apply_creates_one_valid_attached_connector() {
     assert_eq!(created, ["addon-1"]);
     let op = &result["batch"]["operations"][0];
     assert_eq!(op["op"], "addShape");
-    assert_eq!(
-        op["style"],
-        json!({"strokeColor": "#16212b", "strokeWidthPt": 1.6, "fillColor": null, "opacity": 1.0})
-    );
+    assert_eq!(op["style"], json!({}));
     let entry = &op["addonData"]["connectors"];
     assert_eq!(entry["refs"], json!(["shape-r1", "shape-c2"]));
     assert_eq!(entry["data"]["routing"], "orthogonal");
@@ -537,4 +545,26 @@ fn reactions_ignore_objects_without_this_addons_data() {
     stranger["addonData"] = json!({"charts": {"refs": ["shape-c2"], "data": {}}});
     let reply = one(with_own(fixture("page-changed-moved"), &stranger));
     assert_eq!(reply["result"], json!({"batch": {"operations": []}}));
+}
+
+#[test]
+fn a_copied_connector_follows_remapped_refs() {
+    let mut request = fixture("page-changed-moved");
+    let mut connector = fixture("own-connector");
+    connector["addonData"]["connectors"]["refs"][1] = json!("shape-c2-copy");
+    request["params"]["own"][0] = connector;
+    request["params"]["changed"][0]["id"] = json!("shape-c2-copy");
+    let reply = one(request);
+    let entry = &reply["result"]["batch"]["operations"][0]["addonData"]["connectors"];
+    assert_eq!(entry["refs"], json!(["shape-r1", "shape-c2-copy"]));
+    assert_eq!(entry["data"]["end"]["objectId"], "shape-c2-copy");
+    assert_eq!(entry["data"]["endPoint"], json!({"x": 300.0, "y": 252.0}));
+}
+
+#[test]
+fn a_port_too_close_to_the_edge_cannot_shift_off_its_attachment() {
+    let mut request = fixture("tool-apply");
+    request["params"]["objects"][0]["ports"][1]["x"] = json!(0.0);
+    let reply = one(request);
+    assert_eq!(reply["error"]["code"], -32001);
 }

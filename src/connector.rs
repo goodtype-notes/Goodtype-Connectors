@@ -135,7 +135,7 @@ fn arrow_wings(tip: Point, direction: Point, stroke: f64) -> (Point, Point) {
     (back.plus(normal), back.minus(normal))
 }
 
-pub fn shape(route: &Route, arrow: Arrow, stroke: f64, page: Page) -> Option<Shape> {
+fn shape(route: &Route, routing: Routing, arrow: Arrow, stroke: f64, page: Page) -> Option<Shape> {
     let mut nodes: Vec<Node> = match route {
         Route::Polyline(points) => points.iter().copied().map(Node::plain).collect(),
         Route::Curve {
@@ -174,10 +174,7 @@ pub fn shape(route: &Route, arrow: Arrow, stroke: f64, page: Page) -> Option<Sha
     if nodes.len() < 2 || nodes.len() > MAX_SPLINE_NODES {
         return None;
     }
-    let curved = nodes
-        .iter()
-        .any(|n| n.handle_in.is_some() || n.handle_out.is_some());
-    Some(if nodes.len() == 2 && !curved {
+    Some(if nodes.len() == 2 && routing == Routing::Straight {
         Shape::Line {
             start: nodes[0].point,
             end: nodes[1].point,
@@ -190,7 +187,7 @@ pub fn shape(route: &Route, arrow: Arrow, stroke: f64, page: Page) -> Option<Sha
 /// Keep the drawn outline half a stroke inside the page, as the host requires: clamp the points
 /// (which keeps horizontal and vertical runs axis-aligned) and shorten handles that overshoot.
 fn fit(nodes: &mut [Node], stroke: f64, page: Page) {
-    let pad = stroke / 2.0 + 0.25;
+    let pad = stroke / 2.0;
     let clamp = |p: Point| {
         Point::new(
             p.x.clamp(pad, (page.width - pad).max(pad)),
@@ -387,8 +384,15 @@ pub fn build(data: &mut Data, stroke: f64, page: Page) -> Option<(Shape, Point)>
     if start.point.near(end.point) || !start.point.finite() || !end.point.finite() {
         return None;
     }
+    let pad = stroke / 2.0;
+    let fits = |point: Point| {
+        (pad..=page.width - pad).contains(&point.x) && (pad..=page.height - pad).contains(&point.y)
+    };
+    if (data.start.is_some() && !fits(start.point)) || (data.end.is_some() && !fits(end.point)) {
+        return None;
+    }
     let routed = route(data.routing, start, end, &data.bends);
-    let shape = shape(&routed.route, data.arrow, stroke, page)?;
+    let shape = shape(&routed.route, data.routing, data.arrow, stroke, page)?;
     let origin = shape.origin();
     data.bends = routed.bends;
     data.origin = origin;

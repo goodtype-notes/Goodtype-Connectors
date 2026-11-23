@@ -141,6 +141,7 @@ pub fn tool_apply(params: Value) -> Outcome {
     }
     let page = request.page.page()?;
     let (routing, arrow) = settings(&request.settings)?;
+    let supplied_pen = request.pen.is_some();
     let pen = request.pen.unwrap_or_default();
     if !pen.valid() {
         return Err(Refusal::Invalid("Invalid pen"));
@@ -189,7 +190,7 @@ pub fn tool_apply(params: Value) -> Outcome {
         "x": origin.x,
         "y": origin.y,
         "geometry": geometry,
-        "style": pen.style(),
+        "style": if supplied_pen { pen.style() } else { json!({}) },
         "addonData": data.entry(),
     })]))
 }
@@ -212,6 +213,21 @@ fn own(value: &Value) -> Option<Own> {
         Some(v) => v.as_f64().filter(|v| v.is_finite()),
     };
     let entry = value.get("addonData")?.get(ADDON_ID)?;
+    let mut data: Data = serde_json::from_value(entry.get("data")?.clone()).ok()?;
+    let previous_refs = data.refs();
+    let refs: Vec<String> = serde_json::from_value(entry.get("refs")?.clone()).ok()?;
+    // The host remaps refs on copy, while the opaque attachment data still has the old IDs.
+    // A shorter list comes from deletion; follow() handles it with the deleted IDs.
+    if refs.len() == previous_refs.len() {
+        for attachment in [&mut data.start, &mut data.end].into_iter().flatten() {
+            if let Some(index) = previous_refs
+                .iter()
+                .position(|id| id == &attachment.object_id)
+            {
+                attachment.object_id.clone_from(&refs[index]);
+            }
+        }
+    }
     Some(Own {
         id: value.get("id")?.as_str()?.to_owned(),
         x: number("x", 0.0)?,
@@ -224,7 +240,7 @@ fn own(value: &Value) -> Option<Own> {
             .filter(|w| w.is_finite() && *w > 0.0)
             .unwrap_or(DEFAULT_WIDTH),
         geometry: value.get("geometry").cloned().unwrap_or(Value::Null),
-        data: serde_json::from_value(entry.get("data")?.clone()).ok()?,
+        data,
     })
 }
 

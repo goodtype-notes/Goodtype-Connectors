@@ -369,6 +369,21 @@ fn tool_apply_uses_the_hosts_pen_when_given() {
 }
 
 #[test]
+fn tool_apply_preserves_the_hosts_shape_style_with_arrowheads() {
+    let mut frame = fixture("tool-apply");
+    frame["params"]["settings"]["arrow"] = json!("both");
+    let style = json!({"strokeColor": "#1d4ed8", "strokeWidthPt": 3.0, "fillColor": null,
+        "opacity": 0.55, "pattern": "dotted", "patternSpacing": 1.5});
+    frame["params"]["style"] = style.clone();
+    let reply = one(frame);
+    let op = &reply["result"]["batch"]["operations"][0];
+    assert_eq!(op["style"], style);
+    let mut host = FakeHost::new(&parts_from_tool_fixture());
+    host.apply(&reply["result"]).unwrap();
+    assert!(host.path("addon-1").len() > 4);
+}
+
+#[test]
 fn free_points_and_mixed_ends_connect() {
     let mut frame = fixture("tool-apply");
     frame["params"]["points"][1] = json!({"x": 400, "y": 400, "attach": null});

@@ -128,7 +128,9 @@ struct ToolApply {
     page: PageParams,
     points: Vec<ToolPoint>,
     objects: Vec<Value>,
-    /// Not in the 3c contract yet: the active pen, so a connector matches it. Defaults otherwise.
+    #[serde(default)]
+    style: Option<Value>,
+    /// Compatibility with older hosts.
     #[serde(default)]
     pen: Option<Pen>,
 }
@@ -146,6 +148,14 @@ pub fn tool_apply(params: Value) -> Outcome {
     if !pen.valid() {
         return Err(Refusal::Invalid("Invalid pen"));
     }
+    let stroke_width = match &request.style {
+        Some(style) => style
+            .get("strokeWidthPt")
+            .and_then(Value::as_f64)
+            .filter(|width| (0.05..=64.0).contains(width))
+            .ok_or(Refusal::Invalid("Invalid style"))?,
+        None => pen.stroke_width_pt,
+    };
     let parts = snapshots(request.objects)?;
     let mut ends = Vec::with_capacity(2);
     for point in &request.points {
@@ -180,17 +190,17 @@ pub fn tool_apply(params: Value) -> Outcome {
         end_bounds,
         origin: Point::default(),
     };
-    let (shape, origin) = build(&mut data, pen.stroke_width_pt, page)
+    let (shape, origin) = build(&mut data, stroke_width, page)
         .ok_or(Refusal::Failed("The connector ends coincide"))?;
     let geometry = shape.geometry(origin);
-    validate(&geometry, origin.x, origin.y, pen.stroke_width_pt, page)
+    validate(&geometry, origin.x, origin.y, stroke_width, page)
         .map_err(|_| Refusal::Failed("The connector does not fit the page"))?;
     Ok(batch(vec![json!({
         "op": "addShape",
         "x": origin.x,
         "y": origin.y,
         "geometry": geometry,
-        "style": if supplied_pen { pen.style() } else { json!({}) },
+        "style": request.style.unwrap_or_else(|| if supplied_pen { pen.style() } else { json!({}) }),
         "addonData": data.entry(),
     })]))
 }

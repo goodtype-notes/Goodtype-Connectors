@@ -32,10 +32,15 @@ def smoke_test(binary, version):
     require(json.loads(output)["version"] == version, "Packaged version differs from the manifest")
     output = subprocess.check_output([binary, "--check"], text=True, timeout=10)
     require(json.loads(output)["ok"], "Packaged self-check failed")
-    handshake, applied = exchange(binary, [fixture("initialize"), fixture("tool-apply")])
+    request = fixture("tool-apply")
+    style = {"strokeColor": "#1d4ed8", "strokeWidthPt": 3, "fillColor": None,
+             "opacity": 0.75, "pattern": "dashed", "patternSpacing": 1.5}
+    request["params"]["style"] = style
+    handshake, applied = exchange(binary, [fixture("initialize"), request])
     require(handshake["result"]["addon"]["id"] == "connectors", "Wrong session identity")
     op, = applied["result"]["batch"]["operations"]
     require(op["op"] == "addShape" and "connectors" in op["addonData"], "Wrong operation")
+    require(op["style"] == style, "Stroke style did not survive tool/apply")
 
 
 def package():

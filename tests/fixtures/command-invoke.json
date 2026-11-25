@@ -1,11 +1,12 @@
-{"jsonrpc": "2.0", "id": "5", "method": "command/invoke", "params": {
-  "command": "change-routing",
-  "settings": {"routing": "orthogonal", "arrow": "none"},
-  "page": {"id": "page-1", "widthPt": 595.28, "heightPt": 841.89},
-  "objects": ["OWN",
-    {"id": "shape-r1", "type": "group", "x": 100, "y": 100, "rotation": 0, "scale": 1,
-     "bounds": {"x": 100, "y": 100, "width": 48, "height": 16},
-     "ports": [{"x": 100, "y": 108}, {"x": 148, "y": 108}]},
-    {"id": "shape-c2", "type": "group", "x": 300, "y": 160, "rotation": 0, "scale": 1,
-     "bounds": {"x": 300, "y": 160, "width": 24, "height": 24},
-     "ports": [{"x": 300, "y": 172}, {"x": 324, "y": 172}]}]}}
+{"jsonrpc":"2.0","id":"17","method":"command/invoke","params":{
+ "command":"change-routing","settings":{"routing":"orthogonal","arrow":"none"},
+ "page":{"id":"p1","widthPt":595,"heightPt":842},
+ "edit":{"kind":"endpoint","end":"end"},
+ "object":{"id":"arrow-1","type":"shape","x":40,"y":100,"rotation":0,"scale":1,
+           "geometry":{"kind":"line","start":{"x":0,"y":0},"end":{"x":100,"y":0}},
+           "style":{"strokeColor":"#16212b","strokeWidthPt":1.6,"endCap":"arrow"}},
+ "points":[{"x":40,"y":100,"attach":null},
+           {"x":160,"y":100,"attach":{"objectId":"r1","port":0}}],
+ "refs":[{"id":"r1","type":"group","x":160,"y":90,"rotation":0,"scale":1,
+          "bounds":{"x":160,"y":90,"width":40,"height":20},"ports":[{"x":160,"y":100}]}]
+}}

@@ -15,6 +15,7 @@ use std::{
 
 pub const API: &str = "goodtype-api 0.1";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+const PATH_EDIT: &str = "path-edit-v0";
 const BATCH: &str = "page-batch-v0";
 /// The frame limit before the line delimiter.
 pub const MAX_LINE: usize = 4 * 1024 * 1024;
@@ -144,8 +145,9 @@ fn initialize(params: Value) -> Option<Vec<&'static str>> {
     let ok = params.api_version == API
         && Value::Object(params.addon) == identity()
         && unique.len() == params.capabilities.len()
-        && unique.contains(BATCH);
-    ok.then(|| vec![BATCH])
+        && unique.contains(BATCH)
+        && unique.contains(PATH_EDIT);
+    ok.then(|| vec![BATCH, PATH_EDIT])
 }
 
 fn error(code: i32, message: &str) -> Value {
@@ -227,7 +229,7 @@ mod tests {
     use std::io::Cursor;
 
     fn handshake() -> Value {
-        json!({"apiVersion": API, "capabilities": ["progress", "cancel", BATCH],
+        json!({"apiVersion": API, "capabilities": ["progress", "cancel", BATCH, PATH_EDIT],
             "addon": {"id": "connectors", "version": VERSION}})
     }
 
@@ -248,13 +250,13 @@ mod tests {
     }
 
     #[test]
-    fn handshake_accepts_only_the_batch_capability() {
+    fn handshake_accepts_batch_and_path_edit() {
         let (ok, rows) = exchange(&[request("7", "initialize", handshake())]);
         assert!(ok);
         assert_eq!(
             rows[0],
             json!({"jsonrpc": "2.0", "id": "7", "result": {"apiVersion": API,
-                "capabilities": [BATCH], "addon": {"id": "connectors", "version": VERSION}}})
+                "capabilities": [BATCH, PATH_EDIT], "addon": {"id": "connectors", "version": VERSION}}})
         );
     }
 
@@ -265,6 +267,7 @@ mod tests {
             ("addon", json!({"id": "math", "version": VERSION})),
             ("addon", json!({"id": "connectors", "version": "9.9.9"})),
             ("capabilities", json!(["cancel"])),
+            ("capabilities", json!([BATCH])),
             ("capabilities", json!([BATCH, BATCH])),
         ] {
             let mut params = handshake();

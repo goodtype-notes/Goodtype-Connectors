@@ -119,11 +119,18 @@ def validate(manifest_path=ROOT / "goodtype-addon.json", cargo_path=ROOT / "Carg
     require(isinstance(commands, list) and 1 <= len(commands) <= 16, "Process addons declare 1–16 commands")
     unique_ids(commands)
     for command in commands:
-        keys(command, "id label surface")
+        keys(command, "id label surface", "pathEdit")
         labels.append(identifier(command["label"]))
         require(command["surface"] in SURFACES, "Unknown command surface")
         if command["surface"] == "own-object":
             require("own-objects" in permissions, "Own-object commands require own-objects")
+
+        if "pathEdit" in command:
+            descriptor = command["pathEdit"]
+            keys(descriptor, "choice snap")
+            require(command["surface"] == "own-object" and descriptor["snap"] == "ports"
+                    and any(s["id"] == descriptor["choice"] and s["type"] == "choice" for s in settings),
+                    "Invalid path edit descriptor")
 
     strings = m["strings"]
     keys(strings, "en de")

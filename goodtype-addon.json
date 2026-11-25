@@ -1,7 +1,7 @@
 {
   "manifestVersion": 1,
   "id": "connectors",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "apiVersion": "goodtype-api 0.1",
   "target": "x86_64-pc-windows-msvc",
   "entrypoint": "goodtype-connectors.exe",
@@ -18,7 +18,7 @@
       "settings": ["routing", "arrow"]
     }
   ],
-  "commands": [{"id": "change-routing", "label": "cmd-routing", "surface": "own-object"}],
+  "commands": [{"id": "change-routing", "label": "cmd-routing", "surface": "own-object", "pathEdit": {"choice": "routing", "snap": "ports"}}],
   "settings": [
     {
       "id": "routing",

@@ -1,2 +1,5 @@
 [alias]
 xtask = "run --bin xtask --"
+
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=--max-memory=8388608", "-C", "target-feature=-relaxed-simd,-simd128"]

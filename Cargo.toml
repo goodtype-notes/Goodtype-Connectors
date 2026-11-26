@@ -16,3 +16,10 @@ codegen-units = 1
 lto = true
 panic = "abort"
 strip = true
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The capability-free Extism byte ABI for the sideload-only W1 experiment.
+extism-pdk = { version = "=1.4.1", default-features = false }

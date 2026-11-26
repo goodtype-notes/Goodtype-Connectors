@@ -202,6 +202,9 @@ fn shape(
     })
 }
 
+/// The host's page-fit tolerance; `fit` must not accept more than `validate` does.
+const PAGE_TOLERANCE: f64 = 1e-9;
+
 /// Keep the drawn outline half a stroke inside the page, as the host requires: clamp the points
 /// (which keeps horizontal and vertical runs axis-aligned) and shorten handles that overshoot.
 fn fit(nodes: &mut [Node], stroke: f64, page: Page) {
@@ -217,10 +220,10 @@ fn fit(nodes: &mut [Node], stroke: f64, page: Page) {
     }
     for _ in 0..12 {
         let [left, top, right, bottom] = extent(nodes);
-        if left >= pad - EPSILON
-            && top >= pad - EPSILON
-            && right <= page.width - pad + EPSILON
-            && bottom <= page.height - pad + EPSILON
+        if left >= pad - PAGE_TOLERANCE
+            && top >= pad - PAGE_TOLERANCE
+            && right <= page.width - pad + PAGE_TOLERANCE
+            && bottom <= page.height - pad + PAGE_TOLERANCE
         {
             return;
         }
@@ -550,10 +553,10 @@ pub fn validate(geometry: &Value, x: f64, y: f64, stroke: f64, page: Page) -> Re
     let nodes = read_nodes(geometry)?;
     let pad = stroke / 2.0;
     let [left, top, right, bottom] = extent(&nodes);
-    let inside = x + left >= pad - 1e-9
-        && y + top >= pad - 1e-9
-        && x + right <= page.width - pad + 1e-9
-        && y + bottom <= page.height - pad + 1e-9;
+    let inside = x + left >= pad - PAGE_TOLERANCE
+        && y + top >= pad - PAGE_TOLERANCE
+        && x + right <= page.width - pad + PAGE_TOLERANCE
+        && y + bottom <= page.height - pad + PAGE_TOLERANCE;
     if !(x.is_finite() && y.is_finite() && inside) {
         return Err("shape does not fit the page".into());
     }

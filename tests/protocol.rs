@@ -735,3 +735,40 @@ fn a_missing_drop_port_returns_no_update() {
     assert_eq!(reply["error"]["code"], -32602);
     assert!(reply.get("result").is_none());
 }
+
+#[test]
+fn curved_pack_ports_infer_and_cache_sides() {
+    let mut frame = fixture("tool-apply");
+    frame["params"]["settings"] = json!({"routing": "curved", "arrow": "none"});
+    let reply = one(frame);
+    let op = &reply["result"]["batch"]["operations"][0];
+    let data = &op["addonData"]["connectors"]["data"];
+    assert_eq!(data["startSide"], "right");
+    assert_eq!(data["endSide"], "left");
+    let nodes = op["geometry"]["nodes"].as_array().unwrap();
+    let out = &nodes[0]["handleOut"];
+    let into = &nodes[1]["handleIn"];
+    assert!(out["x"].as_f64().unwrap() > 0.0);
+    assert!(into["x"].as_f64().unwrap() < 0.0);
+    assert_eq!(out["y"], 0.0);
+    assert_eq!(into["y"], 0.0);
+    // The diagonal chord is not collinear with either horizontal port handle.
+    assert_ne!(nodes[0]["point"]["y"], nodes[1]["point"]["y"]);
+    FakeHost::new(&parts_from_tool_fixture())
+        .apply(&reply["result"])
+        .unwrap();
+}
+
+#[test]
+fn mid_page_free_curve_keeps_its_bend_after_fit() {
+    let mut frame = fixture("tool-apply");
+    frame["params"]["settings"] = json!({"routing": "curved", "arrow": "none"});
+    frame["params"]["points"] = json!([{"x":100,"y":200},{"x":300,"y":200}]);
+    frame["params"]["objects"] = json!([]);
+    let reply = one(frame);
+    let op = &reply["result"]["batch"]["operations"][0];
+    let nodes = op["geometry"]["nodes"].as_array().unwrap();
+    assert_eq!(nodes[0]["handleOut"]["y"], 50.0);
+    assert_eq!(nodes[1]["handleIn"]["y"], 50.0);
+    FakeHost::new(&[]).apply(&reply["result"]).unwrap();
+}

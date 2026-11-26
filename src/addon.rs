@@ -1,7 +1,10 @@
 //! The three requests that create and maintain connectors: `tool/apply`, `page/changed` and the
 //! `change-routing` own-object command. Each returns a `page-batch-v0` result.
 use crate::{
-    connector::{ADDON_ID, Arrow, Attachment, DEFAULT_WIDTH, Data, Page, Pen, build, validate},
+    connector::{
+        ADDON_ID, Arrow, Attachment, DEFAULT_WIDTH, Data, Page, Pen, Shape, build, caps_fit,
+        legacy_tips, read_nodes, validate,
+    },
     geometry::{Point, Rect, Side},
     route::Routing,
 };
@@ -178,7 +181,7 @@ pub fn tool_apply(params: Value) -> Outcome {
     ] = <[_; 2]>::try_from(ends).expect("two points");
     let mut data = Data {
         routing,
-        arrow,
+        version: 2,
         start,
         end,
         start_point,
@@ -195,178 +198,243 @@ pub fn tool_apply(params: Value) -> Outcome {
     let geometry = shape.geometry(origin);
     validate(&geometry, origin.x, origin.y, stroke_width, page)
         .map_err(|_| Refusal::Failed("The connector does not fit the page"))?;
+    let mut style = request
+        .style
+        .unwrap_or_else(|| if supplied_pen { pen.style() } else { json!({}) });
+    let style_fields = style
+        .as_object_mut()
+        .ok_or(Refusal::Invalid("Invalid style"))?;
+    style_fields.remove("startCap");
+    style_fields.remove("endCap");
+    arrow.apply_caps(&mut style);
+    if !caps_fit(&shape, &style, stroke_width, page) {
+        return Err(Refusal::Failed("The connector caps do not fit the page"));
+    }
     Ok(batch(vec![json!({
         "op": "addShape",
         "x": origin.x,
         "y": origin.y,
         "geometry": geometry,
-        "style": request.style.unwrap_or_else(|| if supplied_pen { pen.style() } else { json!({}) }),
-        "addonData": data.entry(),
+        "style": style,
+        "addonData": {ADDON_ID: data.entry()},
     })]))
 }
 
-/// The fields of an own connector object the addon needs to re-route it.
-struct Own {
+const CANNOT_FIT: Refusal = Refusal::Failed("The connector does not fit the page");
+const REVIEW_LEGACY: Refusal = Refusal::Failed("Legacy connector upgrade requires review");
+const BAD_SOURCE: Refusal = Refusal::Invalid("Invalid connector source");
+
+struct Source {
     id: String,
-    x: f64,
-    y: f64,
-    rotation: f64,
+    origin: Point,
+    sin: f64,
+    cos: f64,
     scale: f64,
     stroke: f64,
     geometry: Value,
-    data: Data,
+    style: Value,
 }
 
-fn own(value: &Value) -> Option<Own> {
-    let number = |key: &str, default: f64| match value.get(key) {
-        None => Some(default),
-        Some(v) => v.as_f64().filter(|v| v.is_finite()),
-    };
-    let entry = value.get("addonData")?.get(ADDON_ID)?;
-    let mut data: Data = serde_json::from_value(entry.get("data")?.clone()).ok()?;
-    let previous_refs = data.refs();
-    let refs: Vec<String> = serde_json::from_value(entry.get("refs")?.clone()).ok()?;
-    // The host remaps refs on copy, while the opaque attachment data still has the old IDs.
-    // A shorter list comes from deletion; follow() handles it with the deleted IDs.
-    if refs.len() == previous_refs.len() {
-        for attachment in [&mut data.start, &mut data.end].into_iter().flatten() {
-            if let Some(index) = previous_refs
-                .iter()
-                .position(|id| id == &attachment.object_id)
-            {
+impl Source {
+    fn read(value: &Value) -> Option<Self> {
+        let number = |key: &str, default: f64| match value.get(key) {
+            None => Some(default),
+            Some(v) => v.as_f64().filter(|v| v.is_finite()),
+        };
+        if value["type"] != "shape" {
+            return None;
+        }
+        let style = value.get("style")?.clone();
+        let stroke = style["strokeWidthPt"].as_f64().unwrap_or(DEFAULT_WIDTH);
+        let scale = number("scale", 1.0)?;
+        if !style.is_object() || scale <= 0.0 || !(stroke * scale).is_finite() || stroke <= 0.0 {
+            return None;
+        }
+        let (sin, cos) = number("rotation", 0.0)?.to_radians().sin_cos();
+        Some(Self {
+            id: value["id"].as_str()?.to_owned(),
+            origin: Point::new(number("x", 0.0)?, number("y", 0.0)?),
+            sin,
+            cos,
+            scale,
+            stroke,
+            geometry: value.get("geometry")?.clone(),
+            style,
+        })
+    }
+
+    fn to_page(&self, point: Point) -> Point {
+        self.origin.plus(
+            Point::new(
+                point.x * self.cos - point.y * self.sin,
+                point.x * self.sin + point.y * self.cos,
+            )
+            .scale(self.scale),
+        )
+    }
+
+    fn inverse_vector(&self, vector: Point) -> Point {
+        Point::new(
+            vector.x * self.cos + vector.y * self.sin,
+            -vector.x * self.sin + vector.y * self.cos,
+        )
+        .scale(1.0 / self.scale)
+    }
+
+    fn endpoints(&self, stored: &Stored, page: Page) -> Result<[Point; 2], Refusal> {
+        let local = if let Some(arrow) = stored.legacy {
+            legacy_tips(&stored.data, arrow, self.stroke, page, &self.geometry)
+                .ok_or(REVIEW_LEGACY)?
+        } else {
+            let nodes = read_nodes(&self.geometry).map_err(invalid)?;
+            [nodes[0].point, nodes[nodes.len() - 1].point]
+        };
+        Ok(local.map(|p| self.to_page(p)))
+    }
+
+    fn update(&self, stored: &mut Stored, page: Page) -> Result<Value, Refusal> {
+        let data = &mut stored.data;
+        let endpoints = [data.start_point, data.end_point];
+        let stroke = self.stroke * self.scale;
+        let (shape, origin) = build(data, stroke, page).ok_or(CANNOT_FIT)?;
+        let nodes = shape.nodes();
+        if nodes[0].point != endpoints[0] || nodes[nodes.len() - 1].point != endpoints[1] {
+            return Err(CANNOT_FIT);
+        }
+        let mut style = self.style.clone();
+        if let Some(arrow) = stored.legacy {
+            arrow.apply_caps(&mut style);
+        }
+        if !caps_fit(&shape, &style, stroke, page) {
+            return Err(CANNOT_FIT);
+        }
+        validate(&shape.geometry(origin), origin.x, origin.y, stroke, page)
+            .map_err(|_| CANNOT_FIT)?;
+        let local = |p: Point| self.inverse_vector(p.minus(self.origin));
+        let shape = match shape {
+            Shape::Line { start, end } => Shape::Line {
+                start: local(start),
+                end: local(end),
+            },
+            Shape::Spline { mut nodes } => {
+                for node in &mut nodes {
+                    node.point = local(node.point);
+                    node.handle_in = node.handle_in.map(|h| self.inverse_vector(h));
+                    node.handle_out = node.handle_out.map(|h| self.inverse_vector(h));
+                }
+                Shape::Spline { nodes }
+            }
+        };
+        data.origin = self.origin;
+        let mut op = json!({"op":"updateObject", "id":self.id,
+            "geometry":shape.geometry(Point::default()), "addonData":data.entry()});
+        if style != self.style {
+            op["style"] = style;
+        }
+        Ok(op)
+    }
+}
+
+struct Stored {
+    data: Data,
+    legacy: Option<Arrow>,
+    refs: Vec<String>,
+}
+
+impl Stored {
+    fn read(entry: &Value) -> Option<Self> {
+        let (mut data, legacy) = Data::decode(entry.get("data")?.clone())?;
+        let previous_refs = data.refs();
+        let refs: Vec<String> = serde_json::from_value(entry.get("refs")?.clone()).ok()?;
+        // Duplication remaps the ordered refs while leaving the addon payload opaque.
+        if refs.len() == previous_refs.len() {
+            for attachment in [&mut data.start, &mut data.end].into_iter().flatten() {
+                let index = previous_refs
+                    .iter()
+                    .position(|id| id == &attachment.object_id)?;
                 attachment.object_id.clone_from(&refs[index]);
             }
         }
+        Some(Self { data, legacy, refs })
     }
-    Some(Own {
-        id: value.get("id")?.as_str()?.to_owned(),
-        x: number("x", 0.0)?,
-        y: number("y", 0.0)?,
-        rotation: number("rotation", 0.0)?,
-        scale: number("scale", 1.0)?,
-        stroke: value
-            .pointer("/style/strokeWidthPt")
-            .and_then(Value::as_f64)
-            .filter(|w| w.is_finite() && *w > 0.0)
-            .unwrap_or(DEFAULT_WIDTH),
-        geometry: value.get("geometry").cloned().unwrap_or(Value::Null),
-        data,
-    })
-}
 
-/// Bring one end up to date: follow its part, or let go when the part was deleted.
-fn follow(
-    attachment: &mut Option<Attachment>,
-    point: &mut Point,
-    side: &mut Option<Side>,
-    bounds: &mut Option<Rect>,
-    parts: &HashMap<String, Snapshot>,
-    deleted: &HashSet<String>,
-    shift: Point,
-) {
-    let Some(current) = attachment else {
-        *point = point.plus(shift);
-        return;
-    };
-    if deleted.contains(&current.object_id) {
-        // Keep the last position; the user's connector survives as a free end.
-        *attachment = None;
-        *side = None;
-        *bounds = None;
-        return;
-    }
-    if parts.contains_key(&current.object_id) {
-        match locate(current, parts) {
-            Some((port, new_side, new_bounds)) => {
-                *point = port;
-                *side = new_side;
-                *bounds = Some(new_bounds);
-            }
-            None => {
-                // The part no longer has that port: keep the end where it was, unattached.
-                *attachment = None;
-                *side = None;
-                *bounds = None;
-            }
+    fn new(routing: Routing) -> Self {
+        Self {
+            data: Data {
+                version: 2,
+                routing,
+                start: None,
+                end: None,
+                start_point: Point::default(),
+                end_point: Point::default(),
+                bends: Vec::new(),
+                start_side: None,
+                end_side: None,
+                start_bounds: None,
+                end_bounds: None,
+                origin: Point::default(),
+            },
+            legacy: None,
+            refs: Vec::new(),
         }
     }
 }
 
-/// Re-route one own connector; `None` when nothing would change.
-fn reroute(
-    value: &Value,
-    parts: &HashMap<String, Snapshot>,
-    deleted: &HashSet<String>,
-    page: Page,
-    routing: Option<Routing>,
-) -> Option<Value> {
-    let Own {
-        id,
-        x,
-        y,
-        rotation,
-        scale,
-        stroke,
-        geometry,
-        mut data,
-    } = own(value)?;
-    let before = data.clone();
-    let shift = if rotation == 0.0 && scale == 1.0 {
-        Point::new(x, y).minus(data.origin)
-    } else {
-        Point::default()
-    };
-    follow(
-        &mut data.start,
-        &mut data.start_point,
-        &mut data.start_side,
-        &mut data.start_bounds,
-        parts,
-        deleted,
-        shift,
-    );
-    follow(
-        &mut data.end,
-        &mut data.end_point,
-        &mut data.end_side,
-        &mut data.end_bounds,
-        parts,
-        deleted,
-        shift,
-    );
-    if let Some(routing) = routing {
-        data.routing = routing;
-        data.bends.clear();
+#[derive(Clone, Copy, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum PathEnd {
+    Start,
+    End,
+}
+
+impl PathEnd {
+    fn index(self) -> usize {
+        usize::from(self == Self::End)
     }
-    let mut op = json!({"op": "updateObject", "id": id});
-    match build(&mut data, stroke, page) {
-        Some((shape, origin)) => {
-            let new_geometry = shape.geometry(origin);
-            validate(&new_geometry, origin.x, origin.y, stroke, page).ok()?;
-            let unchanged = new_geometry == geometry
-                && origin == Point::new(x, y)
-                && rotation == 0.0
-                && scale == 1.0
-                && data == before;
-            if unchanged {
-                return None;
-            }
-            op["x"] = json!(origin.x);
-            op["y"] = json!(origin.y);
-            if rotation != 0.0 {
-                op["rotation"] = json!(0.0);
-            }
-            if scale != 1.0 {
-                op["scale"] = json!(1.0);
-            }
-            op["geometry"] = new_geometry;
-        }
-        // Both ends now coincide: leave the drawing alone, but record any detachment.
-        None if data != before => {}
-        None => return None,
+}
+
+struct Endpoint<'a> {
+    attachment: &'a mut Option<Attachment>,
+    point: &'a mut Point,
+    side: &'a mut Option<Side>,
+    bounds: &'a mut Option<Rect>,
+}
+
+fn endpoints(data: &mut Data) -> [Endpoint<'_>; 2] {
+    [
+        Endpoint {
+            attachment: &mut data.start,
+            point: &mut data.start_point,
+            side: &mut data.start_side,
+            bounds: &mut data.start_bounds,
+        },
+        Endpoint {
+            attachment: &mut data.end,
+            point: &mut data.end_point,
+            side: &mut data.end_side,
+            bounds: &mut data.end_bounds,
+        },
+    ]
+}
+
+impl Endpoint<'_> {
+    fn free(&mut self, point: Point) {
+        *self.attachment = None;
+        *self.point = point;
+        *self.side = None;
+        *self.bounds = None;
     }
-    op["addonData"] = data.entry();
-    Some(op)
+
+    fn follow(
+        &mut self,
+        attachment: Attachment,
+        (point, side, bounds): (Point, Option<Side>, Rect),
+    ) {
+        *self.attachment = Some(attachment);
+        *self.point = point;
+        *self.side = side;
+        *self.bounds = Some(bounds);
+    }
 }
 
 #[derive(Deserialize)]
@@ -378,66 +446,149 @@ struct Changed {
     own: Vec<Value>,
 }
 
-/// `page/changed`: follow moved parts, release ends whose part was deleted. Never deletes.
+/// Follow changed parts and release missing ports using their last confirmed locations.
 pub fn page_changed(params: Value) -> Outcome {
     let request: Changed = serde_json::from_value(params).map_err(invalid)?;
     let page = request.page.page()?;
     let parts = snapshots(request.changed)?;
     let deleted: HashSet<String> = request.deleted.into_iter().collect();
-    let operations: Vec<Value> = request
-        .own
-        .iter()
-        .filter_map(|value| reroute(value, &parts, &deleted, page, None))
-        .take(MAX_OPERATIONS)
-        .collect();
+    let mut operations = Vec::new();
+    for value in request.own {
+        let Some(mut stored) = value
+            .pointer("/addonData/connectors")
+            .and_then(Stored::read)
+        else {
+            continue;
+        };
+        if !stored
+            .data
+            .refs()
+            .iter()
+            .any(|id| parts.contains_key(id) || deleted.contains(id))
+        {
+            continue;
+        }
+        let source = Source::read(&value).ok_or(BAD_SOURCE)?;
+        let tips = source.endpoints(&stored, page)?;
+        let before = stored.data.clone();
+        for (mut end, tip) in endpoints(&mut stored.data).into_iter().zip(tips) {
+            let Some(attachment) = end.attachment.clone() else {
+                end.free(tip);
+                continue;
+            };
+            let id = &attachment.object_id;
+            if deleted.contains(id) || !stored.refs.contains(id) {
+                end.free(*end.point);
+            } else if parts.contains_key(id) {
+                if let Some(port) = locate(&attachment, &parts) {
+                    end.follow(attachment, port);
+                } else {
+                    end.free(*end.point);
+                }
+            }
+        }
+        if stored.data == before && stored.legacy.is_none() {
+            continue;
+        }
+        operations.push(source.update(&mut stored, page)?);
+        if operations.len() == MAX_OPERATIONS {
+            break;
+        }
+    }
     Ok(batch(operations))
 }
 
-/// `command/invoke` for `change-routing`: the selected connectors all take the routing after
-/// the first one's (straight, curved, orthogonal, then straight again).
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+enum Edit {
+    Endpoint { end: PathEnd },
+    Choice { value: Routing },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PathEdit {
+    command: String,
+    settings: Map<String, Value>,
+    page: PageParams,
+    edit: Edit,
+    object: Value,
+    points: [ToolPoint; 2],
+    refs: Vec<Value>,
+}
+
 pub fn command_invoke(params: Value) -> Outcome {
-    let Value::Object(mut params) = params else {
-        return Err(Refusal::Invalid("Invalid command parameters"));
-    };
-    // The contract names `objects`; `scope` mirrors the selection commands' envelope.
-    if let Some(Value::Object(scope)) = params.remove("scope") {
-        for (key, value) in scope {
-            params.entry(key).or_insert(value);
-        }
-    }
-    let allowed = ["command", "settings", "page", "objects", "refs", "kind"];
-    if params.keys().any(|key| !allowed.contains(&key.as_str())) {
-        return Err(Refusal::Invalid("Unknown command parameter"));
-    }
-    if params.get("command").and_then(Value::as_str) != Some(COMMAND) {
+    let request: PathEdit = serde_json::from_value(params).map_err(invalid)?;
+    if request.command != COMMAND {
         return Err(Refusal::Invalid("Unknown command"));
     }
-    let page: PageParams = serde_json::from_value(
-        params
-            .remove("page")
-            .ok_or(Refusal::Invalid("Missing page"))?,
-    )
-    .map_err(invalid)?;
-    let page = page.page()?;
-    let Some(Value::Array(objects)) = params.remove("objects") else {
-        return Err(Refusal::Invalid("Missing objects"));
+    let page = request.page.page()?;
+    let (default_routing, _) = settings(&request.settings)?;
+    let source = Source::read(&request.object).ok_or(BAD_SOURCE)?;
+    let edited = match request.edit {
+        Edit::Endpoint { end } => Some(end.index()),
+        Edit::Choice { .. } => None,
     };
-    let (owned, mut others): (Vec<Value>, Vec<Value>) = objects
-        .into_iter()
-        .partition(|value| value.pointer(&format!("/addonData/{ADDON_ID}")).is_some());
-    if let Some(Value::Array(refs)) = params.remove("refs") {
-        others.extend(refs);
+    let mut stored = match request.object.get("addonData") {
+        None | Some(Value::Null) => {
+            let capped = ["startCap", "endCap"].iter().any(|key| {
+                matches!(
+                    source.style[key].as_str(),
+                    Some("arrow" | "open" | "dot" | "bar")
+                )
+            });
+            if !capped || edited.is_some_and(|i| request.points[i].attach.is_none()) {
+                return Err(BAD_SOURCE);
+            }
+            Stored::new(default_routing)
+        }
+        Some(entries) => {
+            Stored::read(entries.get(ADDON_ID).ok_or(BAD_SOURCE)?).ok_or(BAD_SOURCE)?
+        }
+    };
+    let canonical = source.endpoints(&stored, page)?;
+    if let Edit::Choice { value } = request.edit {
+        stored.data.routing = value;
+        stored.data.bends.clear();
     }
-    let parts = snapshots(others)?;
-    let first = owned
-        .iter()
-        .find_map(own)
-        .ok_or(Refusal::Invalid("No connectors selected"))?;
-    let next = first.data.routing.next();
-    let operations = owned
-        .iter()
-        .filter_map(|value| reroute(value, &parts, &HashSet::new(), page, Some(next)))
-        .take(MAX_OPERATIONS)
-        .collect();
-    Ok(batch(operations))
+    let parts = snapshots(request.refs)?;
+    let legacy = stored.legacy.is_some();
+    for (index, ((mut end, input), tip)) in endpoints(&mut stored.data)
+        .into_iter()
+        .zip(request.points)
+        .zip(canonical)
+        .enumerate()
+    {
+        let point = Point::new(input.x, input.y);
+        if !point.finite() || (edited != Some(index) && input.attach.is_some()) {
+            return Err(Refusal::Invalid("Invalid endpoint"));
+        }
+        if edited == Some(index) {
+            if let Some(attachment) = input.attach {
+                let port = locate(&attachment, &parts).ok_or(Refusal::Invalid("Unknown port"))?;
+                if attachment.object_id == source.id || !port.0.near(point) {
+                    return Err(Refusal::Invalid("Invalid snapped endpoint"));
+                }
+                end.follow(attachment, port);
+            } else {
+                end.free(point);
+            }
+        } else if let Some((attachment, port)) = end
+            .attachment
+            .clone()
+            .filter(|a| stored.refs.contains(&a.object_id))
+            .and_then(|a| locate(&a, &parts).map(|p| (a, p)))
+        {
+            end.follow(attachment, port);
+        } else {
+            end.free(if end.attachment.is_some() {
+                *end.point
+            } else if legacy {
+                tip
+            } else {
+                point
+            });
+        }
+    }
+    Ok(batch(vec![source.update(&mut stored, page)?]))
 }

@@ -22,9 +22,11 @@ CI packages and tests the executable on Windows. A tag matching the manifest ver
 
 ## Host contract
 
-The Windows AppContainer session uses JSON-RPC over stdin and stdout. Replies use the published `batch.operations` envelope, including an empty array for a reaction that changes nothing. The Step 3c example for an empty reaction spells this as `ops`; the host and addon must agree on the envelope.
+Connectors 0.2.0 declares `requires: ["end-caps", "path-edit-v0"]` in its manifest. Do not release it before a Goodtype host with P1 is published; released v0.3.x hosts reject this field. Session negotiation still checks `page-batch-v0` and `path-edit-v0` over `goodtype-api 0.1`. The Windows AppContainer session uses JSON-RPC over stdin and stdout.
 
-Arrowheads are open segments of the same editable spline on this API. Creating a group is supported by the host batch format, but Step 3c has no operation to replace its child geometries and the command payload supplies no group-child snapshots. Separate grouped arrowheads need a host contract for rerouting those children.
+The `change-routing` own-object command declares `pathEdit` with the `routing` choice and `ports` snapping. A port drop adopts a capped line or open spline and attaches the dropped end using the Connect tool's routing preference. A routing pick adopts it with two free ends or changes an owned connector's route. The host commits a port drop immediately with Undo. Routing picks follow the host's proposal and direct-apply settings.
+
+An edit returns exactly one `updateObject` for the captured ID inside `batch.operations`, with local centerline geometry and a single addon entry. Creation uses the addon-ID map. Reactions also write single entries and return an empty operations array when there is no change. Saved connector data is version 2. Core style caps render arrowheads and survive rerouting and detaching. An explicit edit or relevant reaction can upgrade a verified legacy wing path. If the saved geometry no longer matches the legacy signature, the request returns an upgrade-review error and preserves the drawing.
 
 The router prefers a few bends and keeps attached-part clearance when possible. A reaction reply carries up to 32 operations, so the host must scope reaction requests accordingly. Only the attached parts are considered because the session receives their snapshots. With omitted outline color and width, the host supplies the pen. Its final outline bounds check uses the actual pen width.
 

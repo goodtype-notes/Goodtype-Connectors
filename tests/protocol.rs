@@ -49,7 +49,7 @@ fn exchange(frames: &[Value]) -> Vec<Value> {
     let handshake = rows.remove(0);
     assert_eq!(
         handshake["result"]["capabilities"],
-        json!(["page-batch-v0"])
+        json!(["page-batch-v0", "path-edit-v0"])
     );
     for (row, frame) in rows.iter().zip(frames) {
         assert_eq!(row["id"], frame["id"]);
@@ -108,8 +108,6 @@ impl FakeHost {
     }
 
     fn check_entry(&self, id: &str, entry: &Value) -> Result<(), String> {
-        keys(entry, &["connectors"], &[])?;
-        let entry = &entry["connectors"];
         keys(entry, &["refs", "data"], &[])?;
         let refs = entry["refs"].as_array().ok_or("refs must be a list")?;
         let mut seen = Vec::new();
@@ -141,6 +139,8 @@ impl FakeHost {
                 "pattern",
                 "patternSpacing",
                 "patternOffsetPt",
+                "startCap",
+                "endCap",
             ],
         )?;
         if style.get("strokeWidthPt").is_none() {
@@ -176,7 +176,7 @@ impl FakeHost {
                     self.created += 1;
                     let id = format!("addon-{}", self.created);
                     if let Some(entry) = op.get("addonData") {
-                        self.check_entry(&id, entry)?;
+                        self.check_entry(&id, &entry["connectors"])?;
                     }
                     let mut object = Map::new();
                     object.insert("type".into(), json!("shape"));
@@ -213,7 +213,9 @@ impl FakeHost {
                     }
                     let object = staged.get_mut(id).unwrap();
                     for (k, v) in op.as_object().unwrap() {
-                        if k != "op" && k != "id" {
+                        if k == "addonData" {
+                            object["addonData"]["connectors"] = v.clone();
+                        } else if k != "op" && k != "id" {
                             object[k] = v.clone();
                         }
                     }
@@ -302,11 +304,12 @@ fn tool_apply_creates_one_valid_attached_connector() {
     assert_eq!(created, ["addon-1"]);
     let op = &result["batch"]["operations"][0];
     assert_eq!(op["op"], "addShape");
-    assert_eq!(op["style"], json!({}));
+    assert_eq!(op["style"], json!({"endCap": "open"}));
     let entry = &op["addonData"]["connectors"];
     assert_eq!(entry["refs"], json!(["shape-r1", "shape-c2"]));
     assert_eq!(entry["data"]["routing"], "orthogonal");
-    assert_eq!(entry["data"]["arrow"], "end");
+    assert_eq!(entry["data"]["version"], 2);
+    assert!(entry["data"].get("arrow").is_none());
     assert_eq!(
         entry["data"]["start"],
         json!({"objectId": "shape-r1", "port": 1})
@@ -315,16 +318,12 @@ fn tool_apply_creates_one_valid_attached_connector() {
         entry["data"]["end"],
         json!({"objectId": "shape-c2", "port": 0})
     );
-    // Route, then the open arrowhead: tip, wing, tip, wing.
-    let path = host.path("addon-1");
-    let (route, head) = path.split_at(path.len() - 3);
+    let route = &host.path("addon-1");
     assert!(near(route[0], (148.0, 108.0)));
     assert!(near(*route.last().unwrap(), (300.0, 172.0)));
-    assert!(near(head[1], (300.0, 172.0)));
-    assert!(head[0].0 < 300.0 && head[2].0 < 300.0);
     assert_orthogonal(route);
     assert_eq!(
-        route,
+        route.as_slice(),
         [
             (148.0, 108.0),
             (224.0, 108.0),
@@ -345,7 +344,7 @@ fn each_routing_and_arrow_setting_produces_a_valid_shape() {
             host.apply(&reply["result"])
                 .unwrap_or_else(|e| panic!("{routing}/{arrow}: {e}"));
             let kind = reply["result"]["batch"]["operations"][0]["geometry"]["kind"].clone();
-            let expected = if routing == "straight" && arrow == "none" {
+            let expected = if routing == "straight" {
                 "line"
             } else {
                 "spline"
@@ -364,7 +363,7 @@ fn tool_apply_uses_the_hosts_pen_when_given() {
     assert_eq!(
         reply["result"]["batch"]["operations"][0]["style"],
         json!({"strokeColor": "#1d4ed8", "strokeWidthPt": 3.0, "fillColor": null,
-            "opacity": 0.8, "pattern": "dashed"})
+            "opacity": 0.8, "pattern": "dashed", "endCap": "open"})
     );
 }
 
@@ -372,15 +371,17 @@ fn tool_apply_uses_the_hosts_pen_when_given() {
 fn tool_apply_preserves_the_hosts_shape_style_with_arrowheads() {
     let mut frame = fixture("tool-apply");
     frame["params"]["settings"]["arrow"] = json!("both");
-    let style = json!({"strokeColor": "#1d4ed8", "strokeWidthPt": 3.0, "fillColor": null,
+    let mut style = json!({"strokeColor": "#1d4ed8", "strokeWidthPt": 3.0, "fillColor": null,
         "opacity": 0.55, "pattern": "dotted", "patternSpacing": 1.5});
     frame["params"]["style"] = style.clone();
     let reply = one(frame);
     let op = &reply["result"]["batch"]["operations"][0];
+    style["startCap"] = json!("open");
+    style["endCap"] = json!("open");
     assert_eq!(op["style"], style);
     let mut host = FakeHost::new(&parts_from_tool_fixture());
     host.apply(&reply["result"]).unwrap();
-    assert!(host.path("addon-1").len() > 4);
+    assert_eq!(host.path("addon-1").len(), 4);
 }
 
 #[test]
@@ -395,7 +396,7 @@ fn free_points_and_mixed_ends_connect() {
     assert_eq!(entry["refs"], json!(["shape-r1"]));
     assert_eq!(entry["data"]["end"], Value::Null);
     let path = host.path("addon-1");
-    assert!(near(path[path.len() - 2], (400.0, 400.0)));
+    assert!(near(*path.last().unwrap(), (400.0, 400.0)));
 }
 
 #[test]
@@ -442,7 +443,7 @@ fn moved_part_reroutes_and_keeps_the_users_style() {
     assert_orthogonal(&path);
     assert!(near(path[0], (148.0, 108.0)));
     assert!(near(*path.last().unwrap(), (300.0, 252.0)));
-    let data = &ops[0]["addonData"]["connectors"]["data"];
+    let data = &ops[0]["addonData"]["data"];
     assert_eq!(data["endPoint"], json!({"x": 300.0, "y": 252.0}));
     assert_eq!(data["endBounds"]["y"], json!(240.0));
 }
@@ -454,7 +455,7 @@ fn deleted_part_releases_the_end_and_keeps_the_connector() {
     let ops = reply["result"]["batch"]["operations"].as_array().unwrap();
     assert_eq!(ops.len(), 1);
     assert_eq!(ops[0]["op"], "updateObject", "never deleted");
-    let entry = &ops[0]["addonData"]["connectors"];
+    let entry = &ops[0]["addonData"];
     assert_eq!(entry["refs"], json!(["shape-r1"]));
     assert_eq!(entry["data"]["end"], Value::Null);
     assert_eq!(entry["data"]["endPoint"], json!({"x": 300.0, "y": 172.0}));
@@ -466,36 +467,6 @@ fn deleted_part_releases_the_end_and_keeps_the_connector() {
     let path = host.path("addon-0f3c9a");
     assert!(near(*path.last().unwrap(), (300.0, 172.0)));
     assert_orthogonal(&path);
-}
-
-#[test]
-fn change_routing_cycles_the_selected_connectors() {
-    let own = fixture("own-connector");
-    let reply = one(with_own(fixture("command-invoke"), &own));
-    let op = &reply["result"]["batch"]["operations"][0];
-    assert_eq!(op["op"], "updateObject");
-    assert_eq!(op["addonData"]["connectors"]["data"]["routing"], "straight");
-    assert_eq!(
-        op["geometry"],
-        json!({"kind": "line", "start": {"x": 0.0, "y": 0.0}, "end": {"x": 152.0, "y": 64.0}})
-    );
-    // Straight, curved, orthogonal, straight.
-    let mut current = own;
-    let mut seen = Vec::new();
-    for id in 2..=4 {
-        let mut frame = with_own(fixture("command-invoke"), &current);
-        frame["id"] = json!(id.to_string());
-        let reply = one(frame);
-        let op = &reply["result"]["batch"]["operations"][0];
-        for key in ["x", "y", "geometry", "addonData"] {
-            current[key] = op[key].clone();
-        }
-        seen.push(op["addonData"]["connectors"]["data"]["routing"].clone());
-    }
-    assert_eq!(
-        seen,
-        [json!("straight"), json!("curved"), json!("orthogonal")]
-    );
 }
 
 #[test]
@@ -519,7 +490,7 @@ fn full_round_trip_tool_move_noop_and_delete() {
     host.apply(&one(frame)["result"]).unwrap();
     let path = host.path(&id);
     assert!(near(path[0], (108.0, 78.0)));
-    assert_orthogonal(&path[..path.len() - 3]);
+    assert_orthogonal(&path);
 
     // Delete the capacitor: the end stays where it was and becomes free.
     host.objects.remove("shape-c2");
@@ -528,7 +499,7 @@ fn full_round_trip_tool_move_noop_and_delete() {
         "changed": [], "deleted": ["shape-c2"], "own": [host.objects[&id].clone()]}});
     host.apply(&one(frame)["result"]).unwrap();
     let path = host.path(&id);
-    assert!(near(path[path.len() - 2], (300.0, 172.0)));
+    assert!(near(*path.last().unwrap(), (300.0, 172.0)));
     assert_eq!(
         host.objects[&id]["addonData"]["connectors"]["refs"],
         json!(["shape-r1"])
@@ -538,6 +509,11 @@ fn full_round_trip_tool_move_noop_and_delete() {
 #[test]
 fn a_moved_connector_carries_its_free_ends_along() {
     let mut own = fixture("own-connector");
+    let data = own["addonData"]["connectors"]["data"]
+        .as_object_mut()
+        .unwrap();
+    data.remove("arrow");
+    data.insert("version".into(), json!(2));
     own["addonData"]["connectors"]["data"]["end"] = Value::Null;
     own["addonData"]["connectors"]["data"]["endSide"] = Value::Null;
     own["addonData"]["connectors"]["data"]["endBounds"] = Value::Null;
@@ -549,7 +525,7 @@ fn a_moved_connector_carries_its_free_ends_along() {
         "page": {"widthPt": A4.width, "heightPt": A4.height},
         "changed": [parts_from_tool_fixture()[0].clone()], "deleted": [], "own": [own]}});
     let reply = one(frame);
-    let data = &reply["result"]["batch"]["operations"][0]["addonData"]["connectors"]["data"];
+    let data = &reply["result"]["batch"]["operations"][0]["addonData"]["data"];
     assert_eq!(data["endPoint"], json!({"x": 310.0, "y": 192.0}));
     assert_eq!(data["startPoint"], json!({"x": 148.0, "y": 108.0}));
 }
@@ -570,7 +546,7 @@ fn a_copied_connector_follows_remapped_refs() {
     request["params"]["own"][0] = connector;
     request["params"]["changed"][0]["id"] = json!("shape-c2-copy");
     let reply = one(request);
-    let entry = &reply["result"]["batch"]["operations"][0]["addonData"]["connectors"];
+    let entry = &reply["result"]["batch"]["operations"][0]["addonData"];
     assert_eq!(entry["refs"], json!(["shape-r1", "shape-c2-copy"]));
     assert_eq!(entry["data"]["end"]["objectId"], "shape-c2-copy");
     assert_eq!(entry["data"]["endPoint"], json!({"x": 300.0, "y": 252.0}));
@@ -582,4 +558,180 @@ fn a_port_too_close_to_the_edge_cannot_shift_off_its_attachment() {
     request["params"]["objects"][0]["ports"][1]["x"] = json!(0.0);
     let reply = one(request);
     assert_eq!(reply["error"]["code"], -32001);
+}
+
+#[test]
+fn port_drop_matches_the_contract_reply() {
+    assert_eq!(
+        one(fixture("command-invoke")),
+        json!({
+            "jsonrpc":"2.0","id":"17","result":{"batch":{"operations":[{
+                "op":"updateObject","id":"arrow-1",
+                "geometry":{"kind":"spline","closed":false,"nodes":[
+                    {"point":{"x":0.0,"y":0.0},"handleIn":null,"handleOut":null},
+                    {"point":{"x":120.0,"y":0.0},"handleIn":null,"handleOut":null}]},
+                "addonData":{"refs":["r1"],"data":{"version":2,"routing":"orthogonal",
+                    "start":null,"end":{"objectId":"r1","port":0},"startPoint":{"x":40.0,"y":100.0},
+                    "endPoint":{"x":160.0,"y":100.0},"bends":[],"endSide":"left",
+                    "endBounds":{"x":160.0,"y":90.0,"width":40.0,"height":20.0},
+                    "origin":{"x":40.0,"y":100.0}}}
+            }]}}
+        })
+    );
+}
+
+#[test]
+fn a_routing_pick_adopts_an_open_spline_and_retains_transformed_endpoints() {
+    for routing in ["straight", "curved", "orthogonal"] {
+        let mut request = fixture("command-invoke");
+        let params = &mut request["params"];
+        params["edit"] = json!({"kind":"choice","value":routing});
+        params["object"]["rotation"] = json!(90);
+        params["object"]["scale"] = json!(2);
+        params["object"]["geometry"] = json!({"kind":"spline","closed":false,"nodes":[
+            {"point":{"x":0,"y":0},"handleIn":null,"handleOut":null},
+            {"point":{"x":40,"y":-15},"handleIn":null,"handleOut":null},
+            {"point":{"x":100,"y":0},"handleIn":null,"handleOut":null}]});
+        params["points"][1] = json!({"x":40,"y":300,"attach":null});
+        params["refs"] = json!([]);
+        let reply = one(request);
+        let op = &reply["result"]["batch"]["operations"][0];
+        keys(op, &["op", "id", "geometry", "addonData"], &[]).unwrap();
+        assert_eq!(op["addonData"]["refs"], json!([]));
+        assert_eq!(op["addonData"]["data"]["routing"], routing);
+        assert!(op["addonData"]["data"]["start"].is_null());
+        assert!(op["addonData"]["data"]["end"].is_null());
+        let nodes = goodtype_connectors::connector::read_nodes(&op["geometry"]).unwrap();
+        assert!(near((nodes[0].point.x, nodes[0].point.y), (0.0, 0.0)));
+        let end = nodes.last().unwrap().point;
+        assert!(near((end.x, end.y), (100.0, 0.0)));
+    }
+}
+
+#[test]
+fn releasing_an_owned_end_keeps_the_other_attachment_and_routing() {
+    let mut reversed = fixture("command-invoke");
+    reversed["params"]["edit"]["end"] = json!("start");
+    reversed["params"]["points"]
+        .as_array_mut()
+        .unwrap()
+        .swap(0, 1);
+    reversed["params"]["object"]["x"] = json!(160);
+    reversed["params"]["object"]["geometry"]["end"]["x"] = json!(-120);
+    let first = one(reversed.clone());
+    let op = &first["result"]["batch"]["operations"][0];
+    let params = &mut reversed["params"];
+    params["object"]["geometry"] = op["geometry"].clone();
+    params["object"]["addonData"] = json!({"connectors":op["addonData"]});
+    params["settings"]["routing"] = json!("straight");
+    params["edit"]["end"] = json!("end");
+    params["points"][0]["attach"] = Value::Null;
+    params["points"][1] = json!({"x":55,"y":120,"attach":null});
+    let reply = one(reversed);
+    let entry = &reply["result"]["batch"]["operations"][0]["addonData"];
+    assert_eq!(entry["refs"], json!(["r1"]));
+    assert_eq!(entry["data"]["start"]["objectId"], "r1");
+    assert_eq!(entry["data"]["routing"], "orthogonal");
+    assert_eq!(entry["data"]["endPoint"], json!({"x":55.0,"y":120.0}));
+
+    let mut release = fixture("command-invoke");
+    let adopted = one(release.clone());
+    let op = &adopted["result"]["batch"]["operations"][0];
+    release["params"]["object"]["geometry"] = op["geometry"].clone();
+    release["params"]["object"]["addonData"] = json!({"connectors":op["addonData"]});
+    release["params"]["points"][1] = json!({"x":150,"y":130,"attach":null});
+    let reply = one(release);
+    let entry = &reply["result"]["batch"]["operations"][0]["addonData"];
+    assert_eq!(entry["refs"], json!([]));
+    assert!(entry["data"]["end"].is_null());
+    assert_eq!(entry["data"]["endPoint"], json!({"x":150.0,"y":130.0}));
+}
+
+fn legacy_arrow() -> Value {
+    let mut request = fixture("command-invoke");
+    let params = &mut request["params"];
+    params["edit"] = json!({"kind":"choice","value":"straight"});
+    params["refs"] = json!([]);
+    params["points"] = json!([{"x":40,"y":100,"attach":null},{"x":130,"y":104.2,"attach":null}]);
+    params["object"]["y"] = json!(95.8);
+    params["object"]["style"]
+        .as_object_mut()
+        .unwrap()
+        .remove("endCap");
+    let nodes = [
+        [0.0, 4.2],
+        [100.0, 4.2],
+        [90.0, 8.4],
+        [100.0, 4.2],
+        [90.0, 0.0],
+    ]
+    .map(|[x, y]| json!({"point":{"x":x,"y":y},"handleIn":null,"handleOut":null}));
+    params["object"]["geometry"] = json!({"kind":"spline","closed":false,"nodes":nodes});
+    params["object"]["addonData"] = json!({"connectors":{"refs":[],"data":{
+        "routing":"straight","arrow":"end","start":null,"end":null,
+        "startPoint":{"x":40,"y":100},"endPoint":{"x":140,"y":100},
+        "origin":{"x":40,"y":95.8}
+    }}});
+    request
+}
+
+#[test]
+fn legacy_wings_convert_from_the_verified_logical_tip() {
+    let reply = one(legacy_arrow());
+    let op = &reply["result"]["batch"]["operations"][0];
+    assert_eq!(op["style"]["endCap"], "open");
+    assert_eq!(op["addonData"]["data"]["version"], 2);
+    assert_eq!(op["geometry"]["kind"], "line");
+    assert_eq!(op["geometry"]["end"]["x"], 100.0);
+}
+
+#[test]
+fn a_manually_edited_legacy_wing_requires_review_and_returns_no_batch() {
+    let mut request = legacy_arrow();
+    request["params"]["object"]["geometry"]["nodes"][4]["point"]["x"] = json!(89);
+    let reply = one(request);
+    assert_eq!(
+        reply["error"]["message"],
+        "Legacy connector upgrade requires review"
+    );
+    assert!(reply.get("result").is_none());
+}
+
+#[test]
+fn a_legacy_connector_upgrades_in_its_current_transform() {
+    let mut request = legacy_arrow();
+    let object = &mut request["params"]["object"];
+    object["x"] = json!(70);
+    object["y"] = json!(150);
+    object["rotation"] = json!(90);
+    object["scale"] = json!(2);
+    object["style"]["endCap"] = json!("dot");
+    let reply = one(request);
+    let op = &reply["result"]["batch"]["operations"][0];
+    keys(op, &["op", "id", "geometry", "addonData"], &[]).unwrap();
+    let nodes = goodtype_connectors::connector::read_nodes(&op["geometry"]).unwrap();
+    assert!(near((nodes[0].point.x, nodes[0].point.y), (0.0, 4.2)));
+    assert!(near((nodes[1].point.x, nodes[1].point.y), (100.0, 4.2)));
+}
+
+#[test]
+fn a_cap_that_would_clip_refuses_the_exact_route() {
+    let mut request = fixture("command-invoke");
+    let params = &mut request["params"];
+    params["object"]["style"]["endCap"] = json!("dot");
+    params["points"][1]["y"] = json!(1.0);
+    params["refs"][0]["ports"][0]["y"] = json!(1.0);
+    params["refs"][0]["bounds"]["y"] = json!(1.0);
+    let reply = one(request);
+    assert_eq!(reply["error"]["code"], -32001);
+    assert!(reply.get("result").is_none());
+}
+
+#[test]
+fn a_missing_drop_port_returns_no_update() {
+    let mut request = fixture("command-invoke");
+    request["params"]["refs"][0]["ports"] = json!([]);
+    let reply = one(request);
+    assert_eq!(reply["error"]["code"], -32602);
+    assert!(reply.get("result").is_none());
 }

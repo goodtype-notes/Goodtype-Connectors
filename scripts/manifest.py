@@ -79,7 +79,7 @@ def validate(manifest_path=ROOT / "goodtype-addon.json", cargo_path=ROOT / "Carg
     require(len(data) <= 64 * 1024, "Manifest exceeds 64 KiB")
     m = json.loads(data.decode("utf-8"), object_pairs_hook=unique_pairs)
     keys(m, "manifestVersion id version apiVersion target entrypoint transport permissions commands settings strings",
-         "tools")
+         "tools requires")
     require(type(m["manifestVersion"]) is int and m["manifestVersion"] == 1, "Expected manifest version 1")
     require(m["id"] == "connectors", "Unexpected addon ID")
     version = m["version"]
@@ -119,11 +119,18 @@ def validate(manifest_path=ROOT / "goodtype-addon.json", cargo_path=ROOT / "Carg
     require(isinstance(commands, list) and 1 <= len(commands) <= 16, "Process addons declare 1–16 commands")
     unique_ids(commands)
     for command in commands:
-        keys(command, "id label surface")
+        keys(command, "id label surface", "pathEdit")
         labels.append(identifier(command["label"]))
         require(command["surface"] in SURFACES, "Unknown command surface")
         if command["surface"] == "own-object":
             require("own-objects" in permissions, "Own-object commands require own-objects")
+
+        if "pathEdit" in command:
+            descriptor = command["pathEdit"]
+            keys(descriptor, "choice snap")
+            require(command["surface"] == "own-object" and descriptor["snap"] == "ports"
+                    and any(s["id"] == descriptor["choice"] and s["type"] == "choice" for s in settings),
+                    "Invalid path edit descriptor")
 
     strings = m["strings"]
     keys(strings, "en de")

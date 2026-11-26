@@ -7,7 +7,7 @@ use std::{cmp::Ordering, collections::BinaryHeap};
 pub const CLEARANCE: f64 = 12.0;
 /// One bend costs as much as this much extra length, so routes prefer few bends.
 const BEND_COST: f64 = 24.0;
-/// Routes never exceed this many points (the arrowheads add at most six nodes).
+/// Routes never exceed this many points.
 pub const MAX_ROUTE_POINTS: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,14 +25,6 @@ impl Routing {
             "curved" => Some(Self::Curved),
             "orthogonal" => Some(Self::Orthogonal),
             _ => None,
-        }
-    }
-    /// The order `change-routing` cycles through.
-    pub fn next(self) -> Self {
-        match self {
-            Self::Straight => Self::Curved,
-            Self::Curved => Self::Orthogonal,
-            Self::Orthogonal => Self::Straight,
         }
     }
 }

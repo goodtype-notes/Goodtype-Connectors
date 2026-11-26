@@ -46,26 +46,39 @@ pub struct Attachment {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Data {
     pub routing: Routing,
-    pub arrow: Arrow,
+    pub version: u8,
     pub start: Option<Attachment>,
     pub end: Option<Attachment>,
     pub start_point: Point,
     pub end_point: Point,
     #[serde(default)]
     pub bends: Vec<f64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_side: Option<Side>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_side: Option<Side>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_bounds: Option<Rect>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_bounds: Option<Rect>,
     /// The object position this data was last written for; a moved connector moves its free ends.
     pub origin: Point,
 }
 
 impl Data {
+    pub fn decode(mut value: Value) -> Option<(Self, Option<Arrow>)> {
+        let fields = value.as_object_mut()?;
+        let legacy = if fields.contains_key("version") {
+            None
+        } else {
+            let arrow = serde_json::from_value(fields.remove("arrow")?).ok()?;
+            fields.insert("version".into(), json!(2));
+            Some(arrow)
+        };
+        let data: Self = serde_json::from_value(value).ok()?;
+        (data.version == 2).then_some((data, legacy))
+    }
+
     pub fn ends(&self) -> (End, End) {
         let end = |point, side, bounds| End {
             point,
@@ -90,7 +103,7 @@ impl Data {
     }
 
     pub fn entry(&self) -> Value {
-        json!({ADDON_ID: {"refs": self.refs(), "data": self}})
+        json!({"refs": self.refs(), "data": self})
     }
 }
 
@@ -125,9 +138,8 @@ pub enum Shape {
     Spline { nodes: Vec<Node> },
 }
 
-/// An open arrowhead drawn into the same path: tip, one wing, back to the tip, the other wing.
-/// One object keeps the connector a single editable, re-routable shape.
-fn arrow_wings(tip: Point, direction: Point, stroke: f64) -> (Point, Point) {
+/// Old wing signature, used only to verify saved legacy geometry.
+fn legacy_wings(tip: Point, direction: Point, stroke: f64) -> (Point, Point) {
     let length = 6.0 + 2.5 * stroke;
     let half = length * 0.42;
     let back = tip.minus(direction.scale(length));
@@ -135,7 +147,13 @@ fn arrow_wings(tip: Point, direction: Point, stroke: f64) -> (Point, Point) {
     (back.plus(normal), back.minus(normal))
 }
 
-fn shape(route: &Route, routing: Routing, arrow: Arrow, stroke: f64, page: Page) -> Option<Shape> {
+fn shape(
+    route: &Route,
+    routing: Routing,
+    legacy: Option<Arrow>,
+    stroke: f64,
+    page: Page,
+) -> Option<Shape> {
     let mut nodes: Vec<Node> = match route {
         Route::Polyline(points) => points.iter().copied().map(Node::plain).collect(),
         Route::Curve {
@@ -159,14 +177,14 @@ fn shape(route: &Route, routing: Routing, arrow: Arrow, stroke: f64, page: Page)
     if nodes.len() < 2 {
         return None;
     }
-    if arrow != Arrow::None {
+    if matches!(legacy, Some(Arrow::End | Arrow::Both)) {
         let tip = nodes.last()?.point;
-        let (a, b) = arrow_wings(tip, route.arrival()?, stroke);
+        let (a, b) = legacy_wings(tip, route.arrival()?, stroke);
         nodes.extend([Node::plain(a), Node::plain(tip), Node::plain(b)]);
     }
-    if arrow == Arrow::Both {
+    if legacy == Some(Arrow::Both) {
         let tip = nodes[0].point;
-        let (a, b) = arrow_wings(tip, route.departure_reversed()?, stroke);
+        let (a, b) = legacy_wings(tip, route.departure_reversed()?, stroke);
         nodes.splice(0..0, [Node::plain(a), Node::plain(tip), Node::plain(b)]);
     }
     fit(&mut nodes, stroke, page);
@@ -277,7 +295,7 @@ fn cubic_range([p, q, r, s]: [f64; 4]) -> (f64, f64) {
 }
 
 impl Shape {
-    fn nodes(&self) -> Vec<Node> {
+    pub fn nodes(&self) -> Vec<Node> {
         match self {
             Self::Line { start, end } => vec![Node::plain(*start), Node::plain(*end)],
             Self::Spline { nodes } => nodes.clone(),
@@ -392,15 +410,14 @@ pub fn build(data: &mut Data, stroke: f64, page: Page) -> Option<(Shape, Point)>
         return None;
     }
     let routed = route(data.routing, start, end, &data.bends);
-    let shape = shape(&routed.route, data.routing, data.arrow, stroke, page)?;
+    let shape = shape(&routed.route, data.routing, None, stroke, page)?;
     let origin = shape.origin();
     data.bends = routed.bends;
     data.origin = origin;
     Some((shape, origin))
 }
 
-/// Mirrors goodtype-core shape validation and the host's page-fit check for addon shapes.
-pub fn validate(geometry: &Value, x: f64, y: f64, stroke: f64, page: Page) -> Result<(), String> {
+pub fn read_nodes(geometry: &Value) -> Result<Vec<Node>, String> {
     let point = |v: &Value| -> Result<Point, String> {
         let p: Point = serde_json::from_value(v.clone()).map_err(|e| e.to_string())?;
         p.finite()
@@ -437,6 +454,100 @@ pub fn validate(geometry: &Value, x: f64, y: f64, stroke: f64, page: Page) -> Re
         }
         _ => return Err("unknown geometry kind".into()),
     };
+    Ok(nodes)
+}
+
+pub fn legacy_tips(
+    data: &Data,
+    arrow: Arrow,
+    stroke: f64,
+    page: Page,
+    geometry: &Value,
+) -> Option<[Point; 2]> {
+    let (start, end) = data.ends();
+    let routed = route(data.routing, start, end, &data.bends);
+    let old = shape(&routed.route, data.routing, Some(arrow), stroke, page)?;
+    let origin = old.origin();
+    let old_geometry = old.geometry(origin);
+    if geometry["kind"] != old_geometry["kind"] {
+        return None;
+    }
+    let expected = read_nodes(&old_geometry).ok()?;
+    let actual = read_nodes(geometry).ok()?;
+    let same_handle = |a: Option<Point>, b: Option<Point>| match (a, b) {
+        (Some(a), Some(b)) => a.near(b),
+        (None, None) => true,
+        _ => false,
+    };
+    if !origin.near(data.origin)
+        || expected.len() != actual.len()
+        || !expected.iter().zip(actual).all(|(a, b)| {
+            a.point.near(b.point)
+                && same_handle(a.handle_in, b.handle_in)
+                && same_handle(a.handle_out, b.handle_out)
+        })
+    {
+        return None;
+    }
+    let centerline = shape(&routed.route, data.routing, None, stroke, page)?.nodes();
+    Some([
+        centerline.first()?.point.minus(origin),
+        centerline.last()?.point.minus(origin),
+    ])
+}
+
+impl Arrow {
+    pub fn apply_caps(self, style: &mut Value) {
+        if self == Self::Both && style.get("startCap").is_none() {
+            style["startCap"] = json!("open");
+        }
+        if self != Self::None && style.get("endCap").is_none() {
+            style["endCap"] = json!("open");
+        }
+    }
+}
+
+pub fn caps_fit(shape: &Shape, style: &Value, stroke: f64, page: Page) -> bool {
+    let nodes = shape.nodes();
+    let last = nodes.len() - 1;
+    for (index, neighbor, handle, key) in [
+        (0, 1, nodes[0].handle_out, "startCap"),
+        (last, last - 1, nodes[last].handle_in, "endCap"),
+    ] {
+        let tip = nodes[index].point;
+        let direction = handle
+            .and_then(Point::unit)
+            .or_else(|| nodes[neighbor].point.minus(tip).unit())
+            .unwrap_or(Point::new(if index == 0 { 1.0 } else { -1.0 }, 0.0));
+        let (depth, half, radius) = match style[key].as_str() {
+            Some("arrow") => (4.0, 2.0, 0.0),
+            Some("open") => (4.0, 1.75, 0.5),
+            Some("bar") => (0.0, 2.0, 0.5),
+            Some("dot") => (0.0, 0.0, 1.5),
+            Some("none") | None => continue,
+            _ => return false,
+        };
+        let base = tip.plus(direction.scale(depth * stroke));
+        let normal = Point::new(-direction.y, direction.x).scale(half * stroke);
+        let radius = radius * stroke;
+        if [tip, base.plus(normal), base.minus(normal)]
+            .into_iter()
+            .any(|p| {
+                p.x < radius - EPSILON
+                    || p.y < radius - EPSILON
+                    || p.x > page.width - radius + EPSILON
+                    || p.y > page.height - radius + EPSILON
+            })
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// Mirrors goodtype-core shape validation and the host's page-fit check for addon shapes.
+pub fn validate(geometry: &Value, x: f64, y: f64, stroke: f64, page: Page) -> Result<(), String> {
+    let nodes = read_nodes(geometry)?;
     let pad = stroke / 2.0;
     let [left, top, right, bottom] = extent(&nodes);
     let inside = x + left >= pad - 1e-9
@@ -459,10 +570,10 @@ mod tests {
         height: 842.0,
     };
 
-    fn data(routing: Routing, arrow: Arrow, start: End, end: End) -> Data {
+    fn data(routing: Routing, _arrow: Arrow, start: End, end: End) -> Data {
         Data {
             routing,
-            arrow,
+            version: 2,
             start: None,
             end: None,
             start_point: start.point,
@@ -494,25 +605,18 @@ mod tests {
     }
 
     #[test]
-    fn arrowheads_point_into_the_end_and_out_of_the_start() {
+    fn arrow_settings_produce_caps_on_a_clean_line() {
         let mut d = data(
             Routing::Straight,
             Arrow::Both,
             End::free(Point::new(100.0, 100.0)),
             End::free(Point::new(200.0, 100.0)),
         );
-        let (Shape::Spline { nodes }, _) = build(&mut d, 1.6, A4).unwrap() else {
-            panic!()
-        };
-        let points: Vec<Point> = nodes.iter().map(|n| n.point).collect();
-        assert_eq!(points.len(), 8);
-        assert_eq!(points[1], Point::new(100.0, 100.0));
-        assert_eq!(points[3], Point::new(100.0, 100.0));
-        assert_eq!(points[6], Point::new(200.0, 100.0));
-        // End wings sit behind the tip, start wings ahead of the start.
-        assert!(points[5].x < 200.0 && points[7].x < 200.0);
-        assert!(points[0].x > 100.0 && points[2].x > 100.0);
-        assert!((points[5].y - 100.0).abs() == (points[7].y - 100.0).abs());
+        let (shape, _) = build(&mut d, 1.6, A4).unwrap();
+        assert!(matches!(shape, Shape::Line { .. }));
+        let mut style = json!({});
+        Arrow::Both.apply_caps(&mut style);
+        assert_eq!(style, json!({"startCap": "open", "endCap": "open"}));
     }
 
     #[test]
@@ -558,7 +662,7 @@ mod tests {
             validate(&geometry, origin.x, origin.y, stroke, A4)
                 .unwrap_or_else(|e| panic!("{e}: {geometry}"));
             if let Shape::Spline { nodes } = &shape {
-                assert!(nodes.len() <= 64 + 6);
+                assert!(nodes.len() <= crate::route::MAX_ROUTE_POINTS);
                 for pair in nodes.windows(2) {
                     assert!(!pair[0].point.near(pair[1].point), "{geometry}");
                 }
@@ -566,6 +670,32 @@ mod tests {
             built += 1;
         }
         assert!(built > 5900);
+    }
+
+    #[test]
+    fn legacy_verification_reproduces_clipped_wings_and_shortened_handles() {
+        let stroke = 2.0;
+        for routing in [Routing::Straight, Routing::Curved, Routing::Orthogonal] {
+            for arrow in [Arrow::None, Arrow::End, Arrow::Both] {
+                let mut data = data(
+                    routing,
+                    arrow,
+                    End::free(Point::new(15.0, 1.0)),
+                    End::free(Point::new(110.0, 1.0)),
+                );
+                let (start, end) = data.ends();
+                let routed = route(routing, start, end, &[]);
+                let old = shape(&routed.route, routing, Some(arrow), stroke, A4).unwrap();
+                let origin = old.origin();
+                data.origin = origin;
+                let tips = legacy_tips(&data, arrow, stroke, A4, &old.geometry(origin)).unwrap();
+                assert!(tips[0].plus(origin).near(start.point));
+                assert!(tips[1].plus(origin).near(end.point));
+                if arrow != Arrow::None {
+                    assert!(old.nodes().last().unwrap().point.y >= 1.0);
+                }
+            }
+        }
     }
 
     #[test]
@@ -586,7 +716,7 @@ mod tests {
         });
         assert_eq!(d.refs(), ["shape-r1"]);
         let entry = d.entry();
-        let back: Data = serde_json::from_value(entry[ADDON_ID]["data"].clone()).unwrap();
+        let back: Data = serde_json::from_value(entry["data"].clone()).unwrap();
         assert_eq!(back, d);
         assert!(serde_json::to_string(&entry).unwrap().len() < 16 * 1024);
     }

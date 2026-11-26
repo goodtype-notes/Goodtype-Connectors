@@ -40,7 +40,8 @@ def smoke_test(binary, version):
     require(handshake["result"]["addon"]["id"] == "connectors", "Wrong session identity")
     op, = applied["result"]["batch"]["operations"]
     require(op["op"] == "addShape" and "connectors" in op["addonData"], "Wrong operation")
-    require(op["style"] == style, "Stroke style did not survive tool/apply")
+    require(op["style"] == dict(style, endCap="open"),
+            "Stroke style and requested end arrow did not survive tool/apply")
 
 
 def package():

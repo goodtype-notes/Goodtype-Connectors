@@ -22,7 +22,7 @@ CI packages and tests the executable on Windows. A tag matching the manifest ver
 
 ## Host contract
 
-Connectors 0.2.0 requires a Goodtype build that implements the connector arrows contract and offers both `page-batch-v0` and `path-edit-v0` over `goodtype-api 0.1`. This capability check is the minimum host requirement. The Windows AppContainer session uses JSON-RPC over stdin and stdout.
+Connectors 0.2.0 declares `requires: ["end-caps", "path-edit-v0"]` in its manifest. Do not release it before a Goodtype host with P1 is published; released v0.3.x hosts reject this field. Session negotiation still checks `page-batch-v0` and `path-edit-v0` over `goodtype-api 0.1`. The Windows AppContainer session uses JSON-RPC over stdin and stdout.
 
 The `change-routing` own-object command declares `pathEdit` with the `routing` choice and `ports` snapping. A port drop adopts a capped line or open spline and attaches the dropped end using the Connect tool's routing preference. A routing pick adopts it with two free ends or changes an owned connector's route. The host commits a port drop immediately with Undo. Routing picks follow the host's proposal and direct-apply settings.
 

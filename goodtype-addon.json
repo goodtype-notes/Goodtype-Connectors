@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "requires": ["end-caps", "path-edit-v0"],
   "id": "connectors",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "apiVersion": "goodtype-api 0.1",
   "target": "x86_64-pc-windows-msvc",
   "entrypoint": "goodtype-connectors.exe",

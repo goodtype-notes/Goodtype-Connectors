@@ -124,12 +124,17 @@ pub fn route(routing: Routing, start: End, end: End, bends: &[f64]) -> Routed {
 fn curved(start: End, end: End) -> Route {
     let span = end.point.minus(start.point);
     let reach = (span.length() * 0.45).clamp(10.0, 160.0);
-    let out = start
-        .side
-        .map_or(span.scale(1.0 / 3.0), |side| side.normal().scale(reach));
-    let into = end
-        .side
-        .map_or(span.scale(-1.0 / 3.0), |side| side.normal().scale(reach));
+    // A fixed perpendicular orientation stays continuous while a free end is dragged.
+    let bend = Point::new(-span.y, span.x)
+        .unit()
+        .unwrap_or_default()
+        .scale((span.length() * 0.25).min(80.0));
+    let out = start.side.map_or(span.scale(1.0 / 3.0).plus(bend), |side| {
+        side.normal().scale(reach)
+    });
+    let into = end.side.map_or(span.scale(-1.0 / 3.0).plus(bend), |side| {
+        side.normal().scale(reach)
+    });
     Route::Curve {
         start: start.point,
         end: end.point,
@@ -691,7 +696,29 @@ pub(crate) mod tests {
             End::free(Point::new(30.0, 0.0)),
             &[],
         );
-        assert_eq!(free.route.arrival(), Some(Point::new(1.0, 0.0)));
+        assert!(free.route.arrival().unwrap().y < 0.0);
+    }
+
+    #[test]
+    fn free_curves_bend_deterministically_without_drag_flips() {
+        let start = End::free(Point::new(100.0, 100.0));
+        for point in [
+            Point::new(300.0, 100.0),
+            Point::new(300.0, 99.9),
+            Point::new(300.0, 100.1),
+            Point::new(100.0, 300.0),
+        ] {
+            let end = End::free(point);
+            let result = route(Routing::Curved, start, end, &[]);
+            assert_eq!(result, route(Routing::Curved, start, end, &[]));
+            let Route::Curve { out, into, .. } = result.route else {
+                panic!()
+            };
+            let span = point.minus(start.point);
+            for handle in [out, into] {
+                assert!(span.x * handle.y - span.y * handle.x > EPSILON);
+            }
+        }
     }
 
     /// A small deterministic generator, so property tests need no extra dependency.

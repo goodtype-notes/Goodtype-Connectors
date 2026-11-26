@@ -20,9 +20,11 @@ The script verifies the extracted executable and writes the ZIP and SHA-256 chec
 
 CI packages and tests the executable on Windows. A tag matching the manifest version on the main branch publishes through the protected release environment. Configure its `ADDON_SIGNING_KEY` secret and commit the matching Ed25519 public key as `release-public-key.pem` before publishing.
 
+Curved routes give free ends a gentle, deterministic arc with a bounded bend. Attached ends use the side inferred from the port position and part bounds; page-edge clamping can reduce handles to keep the drawing on the page.
+
 ## Host contract
 
-Connectors 0.2.0 declares `requires: ["end-caps", "path-edit-v0"]` in its manifest. Do not release it before a Goodtype host with P1 is published; released v0.3.x hosts reject this field. Session negotiation still checks `page-batch-v0` and `path-edit-v0` over `goodtype-api 0.1`. The Windows AppContainer session uses JSON-RPC over stdin and stdout.
+Connectors 0.2.1 declares `requires: ["end-caps", "path-edit-v0"]` in its manifest. Do not release it before a Goodtype host with P1 is published; released v0.3.x hosts reject this field. Session negotiation still checks `page-batch-v0` and `path-edit-v0` over `goodtype-api 0.1`. The Windows AppContainer session uses JSON-RPC over stdin and stdout.
 
 The `change-routing` own-object command declares `pathEdit` with the `routing` choice and `ports` snapping. A port drop adopts a capped line or open spline and attaches the dropped end using the Connect tool's routing preference. A routing pick adopts it with two free ends or changes an owned connector's route. The host commits a port drop immediately with Undo. Routing picks follow the host's proposal and direct-apply settings.
 

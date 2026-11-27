@@ -1,0 +1,9 @@
+[
+  {"method":"group/descendants","params":{"revision":7,"groupId":"symbol"},"ids":["child"]},
+  {"method":"group/descendants","params":{"revision":7,"groupId":"unrelated"},"error":"out-of-scope"},
+  {"method":"group/descendants","params":{"revision":8,"groupId":"symbol"},"error":"revision-mismatch"},
+  {"method":"region/obstacles","params":{"revision":7,"bounds":{"x":20,"y":20,"width":100,"height":100}},"ids":["symbol","child","unrelated"]},
+  {"method":"region/obstacles","params":{"revision":8,"bounds":{"x":20,"y":20,"width":100,"height":100}},"error":"revision-mismatch"},
+  {"method":"region/obstacles","params":{"revision":7,"bounds":{"x":500,"y":20,"width":100,"height":100}},"error":"out-of-scope"},
+  {"method":"region/obstacles","params":{"revision":7,"bounds":{"x":20,"y":20,"width":0,"height":100}},"error":"out-of-scope"}
+]

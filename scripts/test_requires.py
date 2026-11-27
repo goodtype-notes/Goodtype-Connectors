@@ -53,6 +53,8 @@ def used_features(manifest):
         used.add("end-caps")
     if any("pathEdit" in command for command in manifest["commands"]) or '"path-edit-v0"' in source:
         used.add("path-edit-v0")
+    if '"scoped-reads-v0"' in source:
+        used.add("scoped-reads-v0")
     return used
 
 

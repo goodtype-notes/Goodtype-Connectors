@@ -22,4 +22,6 @@ Deleting a connected part leaves the connector in place and releases that end. S
 
 Connectors needs permission to edit the objects it owns and react when attached objects change. Routing runs on your device through Goodtype's local addon session.
 
-Connectors 0.2.2 declares `requires: ["end-caps", "path-edit-v0"]` in its manifest. Do not release it before a Goodtype host with P1 is published; released v0.3.x hosts reject this field. Legacy heads stay as saved until a successful upgrade. If Goodtype reports that a legacy drawing needs review, you can detach it and edit the saved drawing as an ordinary shape.
+Connectors 0.3.0 declares `requires: ["end-caps", "path-edit-v0", "scoped-reads-v0"]` in its manifest. It needs a Goodtype host with P3 scoped geometry reads; released v0.3.x hosts reject this field. Legacy heads stay as saved until a successful upgrade. If Goodtype reports that a legacy drawing needs review, you can detach it and edit the saved drawing as an ordinary shape.
+
+Orthogonal connectors route around nearby parts on native release/commit using `scoped-reads-v0`; straight and curved routes stay unchanged. Live Wasm previews have no reads and may differ from the committed route.

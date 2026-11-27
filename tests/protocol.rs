@@ -49,7 +49,7 @@ fn exchange(frames: &[Value]) -> Vec<Value> {
     let handshake = rows.remove(0);
     assert_eq!(
         handshake["result"]["capabilities"],
-        json!(["page-batch-v0", "path-edit-v0"])
+        json!(["page-batch-v0", "path-edit-v0", "scoped-reads-v0"])
     );
     for (row, frame) in rows.iter().zip(frames) {
         assert_eq!(row["id"], frame["id"]);
@@ -805,4 +805,176 @@ fn repeated_free_endpoint_edits_keep_the_cached_axis_near_the_diagonal() {
             assert_eq!(data["endSide"], if y < 215.0 { "left" } else { "top" });
         }
     }
+}
+
+fn reads_offer() -> Value {
+    json!({"revision":7,"groups":[],"region":{"x":0,"y":0,"width":595.28,"height":841.89},
+        "maxObjects":256,"maxBytes":65536,"maxCalls":16,"maxTotalBytes":262144,"maxRegionSidePt":1024})
+}
+
+fn read_reply(index: usize, result: Value) -> Value {
+    json!({"jsonrpc":"2.0","id":format!("connectors-read-{index}"),"result":result})
+}
+
+fn scoped_exchange(mut handshake: Value, frames: &[Value], enabled: bool) -> Vec<Value> {
+    if !enabled {
+        handshake["params"]["capabilities"] = json!(["page-batch-v0", "path-edit-v0"]);
+    }
+    let input = std::iter::once(&handshake)
+        .chain(frames)
+        .map(|v| format!("{v}\n"))
+        .collect::<String>();
+    let mut output = Vec::new();
+    session::run(Cursor::new(input), &mut output).unwrap();
+    String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|v| serde_json::from_str(v).unwrap())
+        .collect()
+}
+
+#[test]
+fn scoped_release_reads_region_and_routes_around_a_box() {
+    let mut request = fixture("tool-apply");
+    request["params"]["reads"] = reads_offer();
+    let obstacle = json!({"id":"unrelated","type":"shape","bounds":{"x":205,"y":90,"width":45,"height":110},"ports":[]});
+    let mut objects = request["params"]["objects"].as_array().unwrap().clone();
+    objects.push(obstacle.clone());
+    let rows = scoped_exchange(
+        fixture("initialize"),
+        &[
+            request.clone(),
+            read_reply(1, json!({"revision":7,"objects":objects})),
+        ],
+        true,
+    );
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[1]["method"], "region/obstacles");
+    assert_eq!(
+        rows[1]["params"],
+        json!({"revision":7,"bounds":{"x":136.0,"y":96.0,"width":176.0,"height":88.0}})
+    );
+    let op = &rows[2]["result"]["batch"]["operations"][0];
+    let nodes = goodtype_connectors::connector::read_nodes(&op["geometry"]).unwrap();
+    let origin = goodtype_connectors::geometry::Point::new(
+        op["x"].as_f64().unwrap(),
+        op["y"].as_f64().unwrap(),
+    );
+    let bounds: goodtype_connectors::geometry::Rect =
+        serde_json::from_value(obstacle["bounds"].clone()).unwrap();
+    for pair in nodes.windows(2) {
+        assert!(
+            !bounds
+                .inflate(12.0)
+                .blocks(pair[0].point.plus(origin), pair[1].point.plus(origin))
+        );
+    }
+    assert_ne!(rows[2]["result"], one(fixture("tool-apply"))["result"]);
+    FakeHost::new(&request["params"]["objects"].as_array().unwrap().clone())
+        .apply(&rows[2]["result"])
+        .unwrap();
+}
+
+#[test]
+fn scoped_errors_and_bad_results_fall_back_without_losing_commit() {
+    let baseline = one(fixture("tool-apply"))["result"].clone();
+    let mut request = fixture("tool-apply");
+    request["params"]["reads"] = reads_offer();
+    let mut replies: Vec<Value> = ["out-of-scope","revision-mismatch","limit-exceeded","invalid-params"].iter().map(|reason|json!({"jsonrpc":"2.0","id":"connectors-read-1","error":{"code":-32004,"message":reason}})).collect();
+    replies.push(read_reply(1, json!({"revision":8,"objects":[]})));
+    replies.push(read_reply(1,json!({"revision":7,"objects":vec![json!({"id":"x","bounds":{"x":1,"y":1,"width":2,"height":2}});257]})));
+    replies.push(read_reply(1, json!({"revision":7,"objects":[{"id":"x"}]})));
+    for response in replies {
+        let rows = scoped_exchange(fixture("initialize"), &[request.clone(), response], true);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[2]["result"], baseline);
+    }
+    let rows = scoped_exchange(fixture("initialize"), &[request], false);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[1]["result"], baseline);
+}
+
+#[test]
+fn group_members_are_excluded_and_read_budgets_are_bounded() {
+    let mut request = fixture("tool-apply");
+    let mut offer = reads_offer();
+    offer["groups"] = json!(["shape-r1"]);
+    offer["maxCalls"] = json!(2);
+    request["params"]["reads"] = offer.clone();
+    let child = json!({"id":"child","type":"shape","parentId":"shape-r1","bounds":{"x":190,"y":80,"width":70,"height":150},"ports":[]});
+    let rows = scoped_exchange(
+        fixture("initialize"),
+        &[
+            request.clone(),
+            read_reply(1, json!({"revision":7,"objects":[child.clone()]})),
+            read_reply(2, json!({"revision":7,"objects":[child]})),
+        ],
+        true,
+    );
+    assert_eq!(rows.len(), 4);
+    assert_eq!(rows[1]["method"], "group/descendants");
+    assert_eq!(rows[2]["method"], "region/obstacles");
+    assert_eq!(rows[3]["result"], one(fixture("tool-apply"))["result"]);
+    for (key, value) in [
+        ("maxCalls", json!(1)),
+        ("groups", json!(["shape-r1", "shape-c2"])),
+        ("maxRegionSidePt", json!(10)),
+    ] {
+        request["params"]["reads"] = offer.clone();
+        request["params"]["reads"][key] = value;
+        let rows = scoped_exchange(fixture("initialize"), &[request.clone()], true);
+        assert_eq!(rows.len(), 2);
+        assert!(rows[1].get("result").is_some());
+    }
+    request["params"]["reads"] = offer;
+    let rows = scoped_exchange(
+        fixture("initialize"),
+        &[
+            request,
+            read_reply(
+                1,
+                json!({"revision":7,"objects":vec![json!({"id":"x"});257]}),
+            ),
+        ],
+        true,
+    );
+    assert_eq!(rows.len(), 3); // No second read after a failed group result.
+}
+
+#[test]
+fn reads_are_ignored_for_curves_straight_routes_and_wasm_style_calls() {
+    for routing in ["straight", "curved"] {
+        let mut request = fixture("tool-apply");
+        request["params"]["settings"]["routing"] = json!(routing);
+        request["params"]["reads"] = reads_offer();
+        assert_eq!(
+            scoped_exchange(fixture("initialize"), &[request.clone()], true).len(),
+            2
+        );
+        assert!(goodtype_connectors::addon::tool_apply(request["params"].clone()).is_ok());
+    }
+}
+
+#[test]
+fn path_release_excludes_own_path_and_clips_query_to_grant() {
+    let mut request = fixture("command-invoke");
+    let mut offer = reads_offer();
+    offer["region"] = json!({"x":35,"y":95,"width":130,"height":10});
+    request["params"]["reads"] = offer;
+    let own_box = json!({"id":"arrow-1","type":"shape","bounds":{"x":35,"y":95,"width":130,"height":10},"ports":[]});
+    let rows = scoped_exchange(
+        fixture("initialize"),
+        &[
+            request.clone(),
+            read_reply(1, json!({"revision":7,"objects":[own_box]})),
+        ],
+        true,
+    );
+    assert_eq!(rows.len(), 3);
+    assert_eq!(
+        rows[1]["params"]["bounds"],
+        json!({"x":35.0,"y":95.0,"width":130.0,"height":10.0})
+    );
+    request["params"].as_object_mut().unwrap().remove("reads");
+    assert_eq!(rows[2]["result"], one(request)["result"]);
 }

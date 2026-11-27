@@ -100,7 +100,7 @@ dependencies = [
 
 [[package]]
 name = "goodtype-connectors"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "extism-pdk",
  "serde",

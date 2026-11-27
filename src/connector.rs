@@ -2,7 +2,7 @@
 //! route into canonical shape geometry and keeps the stored data in step with it.
 use crate::{
     geometry::{EPSILON, Point, Rect, Side},
-    route::{End, Route, Routing, inferred_side, route},
+    route::{End, Route, Routing, inferred_side, route, route_with_obstacles},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -406,6 +406,15 @@ impl Pen {
 
 /// Route `data`, store what was routed and return the shape with its origin.
 pub fn build(data: &mut Data, stroke: f64, page: Page) -> Option<(Shape, Point)> {
+    build_with_obstacles(data, stroke, page, &[])
+}
+
+pub fn build_with_obstacles(
+    data: &mut Data,
+    stroke: f64,
+    page: Page,
+    obstacles: &[Rect],
+) -> Option<(Shape, Point)> {
     if data.routing != Routing::Straight {
         if data.start_bounds.is_none() {
             data.start_side = Some(inferred_side(
@@ -433,7 +442,7 @@ pub fn build(data: &mut Data, stroke: f64, page: Page) -> Option<(Shape, Point)>
     if (data.start.is_some() && !fits(start.point)) || (data.end.is_some() && !fits(end.point)) {
         return None;
     }
-    let routed = route(data.routing, start, end, &data.bends);
+    let routed = route_with_obstacles(data.routing, start, end, &data.bends, obstacles);
     let shape = shape(&routed.route, data.routing, None, stroke, page)?;
     let origin = shape.origin();
     data.bends = routed.bends;

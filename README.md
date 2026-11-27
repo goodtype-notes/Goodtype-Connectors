@@ -30,12 +30,16 @@ Native and sideload-only Wasm entry points share this routing and shape-building
 
 ## Host contract
 
-Connectors 0.2.2 declares `requires: ["end-caps", "path-edit-v0"]` in its manifest. Do not release it before a Goodtype host with P1 is published; released v0.3.x hosts reject this field. Session negotiation still checks `page-batch-v0` and `path-edit-v0` over `goodtype-api 0.1`. The Windows AppContainer session uses JSON-RPC over stdin and stdout.
+Connectors 0.3.0 declares `requires: ["end-caps", "path-edit-v0", "scoped-reads-v0"]` in its manifest. It needs a Goodtype host with P3 scoped geometry reads; released v0.3.x hosts reject this field. Session negotiation still checks `page-batch-v0`, `path-edit-v0` and `scoped-reads-v0` over `goodtype-api 0.1`. The Windows AppContainer session uses JSON-RPC over stdin and stdout.
 
 The `change-routing` own-object command declares `pathEdit` with the `routing` choice and `ports` snapping. A port drop adopts a capped line or open spline and attaches the dropped end using the Connect tool's routing preference. A routing pick adopts it with two free ends or changes an owned connector's route. The host commits a port drop immediately with Undo. Routing picks follow the host's proposal and direct-apply settings.
 
 An edit returns exactly one `updateObject` for the captured ID inside `batch.operations`, with local centerline geometry and a single addon entry. Creation uses the addon-ID map. Reactions also write single entries and return an empty operations array when there is no change. Saved connector data is version 2. Core style caps render arrowheads and survive rerouting and detaching. An explicit edit or relevant reaction can upgrade a verified legacy wing path. If the saved geometry no longer matches the legacy signature, the request returns an upgrade-review error and preserves the drawing.
 
-The router prefers a few bends and keeps attached-part clearance when possible. A reaction reply carries up to 32 operations, so the host must scope reaction requests accordingly. Only the attached parts are considered because the session receives their snapshots. With omitted outline color and width, the host supplies the pen. Its final outline bounds check uses the actual pen width.
+The router prefers a few bends and keeps attached-part clearance when possible. A reaction reply carries up to 32 operations, so the host must scope reaction requests accordingly. Reactions still consider only attached parts; release actions can read nearby obstacles. With omitted outline color and width, the host supplies the pen. Its final outline bounds check uses the actual pen width.
 
 Licensed under [Apache 2.0](LICENSE).
+
+Orthogonal connectors route around nearby parts on native release/commit using `scoped-reads-v0`; straight and curved routes stay unchanged. Live Wasm previews have no reads and may differ from the committed route.
+
+A release queries the current route bounding box expanded by 12 pt, intersected with the advertised region. If either side exceeds the advertised limit (at most 1024 pt), it uses the existing router instead of treating a partial corridor as clear. Own path, endpoint IDs and explicit descendants of an endpoint group are excluded; other boxes are inflated by 12 pt. One region read plus at most one group read respects the invocation budgets. Two distinct endpoint groups, over 32 unrelated boxes (the grid-search work cap), any refusal, bad response, stale revision or exhausted budget use the existing attached-part router. Unroutable obstacles also fall back. No obstacle data is persisted. Wasm commits also keep the existing routing because that transport supplies no reads.

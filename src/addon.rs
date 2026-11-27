@@ -2,8 +2,8 @@
 //! `change-routing` own-object command. Each returns a `page-batch-v0` result.
 use crate::{
     connector::{
-        ADDON_ID, Arrow, Attachment, DEFAULT_WIDTH, Data, Page, Pen, Shape, build, caps_fit,
-        legacy_tips, read_nodes, validate,
+        ADDON_ID, Arrow, Attachment, DEFAULT_WIDTH, Data, Page, Pen, Shape, build_with_obstacles,
+        caps_fit, legacy_tips, read_nodes, validate,
     },
     geometry::{Point, Rect, Side},
     route::Routing,
@@ -140,6 +140,14 @@ struct ToolApply {
 
 /// `tool/apply` for the `connect` tool: one new connector between the two released points.
 pub fn tool_apply(params: Value) -> Outcome {
+    tool_apply_with_reads(params, &mut |_| Vec::new())
+}
+
+pub fn tool_apply_with_reads(
+    mut params: Value,
+    read: &mut impl FnMut(&Data) -> Vec<Rect>,
+) -> Outcome {
+    params.as_object_mut().map(|p| p.remove("reads"));
     let request: ToolApply = serde_json::from_value(params).map_err(invalid)?;
     if request.tool != TOOL || request.points.len() != 2 {
         return Err(Refusal::Invalid("Unknown tool or wrong point count"));
@@ -193,7 +201,8 @@ pub fn tool_apply(params: Value) -> Outcome {
         end_bounds,
         origin: Point::default(),
     };
-    let (shape, origin) = build(&mut data, stroke_width, page)
+    let obstacles = read(&data);
+    let (shape, origin) = build_with_obstacles(&mut data, stroke_width, page, &obstacles)
         .ok_or(Refusal::Failed("The connector ends coincide"))?;
     let geometry = shape.geometry(origin);
     validate(&geometry, origin.x, origin.y, stroke_width, page)
@@ -292,11 +301,17 @@ impl Source {
         Ok(local.map(|p| self.to_page(p)))
     }
 
-    fn update(&self, stored: &mut Stored, page: Page) -> Result<Value, Refusal> {
+    fn update(
+        &self,
+        stored: &mut Stored,
+        page: Page,
+        obstacles: &[Rect],
+    ) -> Result<Value, Refusal> {
         let data = &mut stored.data;
         let endpoints = [data.start_point, data.end_point];
         let stroke = self.stroke * self.scale;
-        let (shape, origin) = build(data, stroke, page).ok_or(CANNOT_FIT)?;
+        let (shape, origin) =
+            build_with_obstacles(data, stroke, page, obstacles).ok_or(CANNOT_FIT)?;
         let nodes = shape.nodes();
         if nodes[0].point != endpoints[0] || nodes[nodes.len() - 1].point != endpoints[1] {
             return Err(CANNOT_FIT);
@@ -449,7 +464,8 @@ struct Changed {
 }
 
 /// Follow changed parts and release missing ports using their last confirmed locations.
-pub fn page_changed(params: Value) -> Outcome {
+pub fn page_changed(mut params: Value) -> Outcome {
+    params.as_object_mut().map(|p| p.remove("reads"));
     let request: Changed = serde_json::from_value(params).map_err(invalid)?;
     let page = request.page.page()?;
     let parts = snapshots(request.changed)?;
@@ -492,7 +508,7 @@ pub fn page_changed(params: Value) -> Outcome {
         if stored.data == before && stored.legacy.is_none() {
             continue;
         }
-        operations.push(source.update(&mut stored, page)?);
+        operations.push(source.update(&mut stored, page, &[])?);
         if operations.len() == MAX_OPERATIONS {
             break;
         }
@@ -520,6 +536,14 @@ struct PathEdit {
 }
 
 pub fn command_invoke(params: Value) -> Outcome {
+    command_invoke_with_reads(params, &mut |_| Vec::new())
+}
+
+pub fn command_invoke_with_reads(
+    mut params: Value,
+    read: &mut impl FnMut(&Data) -> Vec<Rect>,
+) -> Outcome {
+    params.as_object_mut().map(|p| p.remove("reads"));
     let request: PathEdit = serde_json::from_value(params).map_err(invalid)?;
     if request.command != COMMAND {
         return Err(Refusal::Invalid("Unknown command"));
@@ -592,5 +616,6 @@ pub fn command_invoke(params: Value) -> Outcome {
             });
         }
     }
-    Ok(batch(vec![source.update(&mut stored, page)?]))
+    let obstacles = read(&stored.data);
+    Ok(batch(vec![source.update(&mut stored, page, &obstacles)?]))
 }

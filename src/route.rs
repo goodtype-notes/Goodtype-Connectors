@@ -119,7 +119,17 @@ pub struct Routed {
 
 /// Route a connector. `bends` are offsets of an orthogonal route's middle segments from their
 /// automatic position; they are kept only while the route keeps the same shape and stays clear.
-pub fn route(routing: Routing, mut start: End, mut end: End, bends: &[f64]) -> Routed {
+pub fn route(routing: Routing, start: End, end: End, bends: &[f64]) -> Routed {
+    route_with_obstacles(routing, start, end, bends, &[])
+}
+
+pub fn route_with_obstacles(
+    routing: Routing,
+    mut start: End,
+    mut end: End,
+    bends: &[f64],
+    obstacles: &[Rect],
+) -> Routed {
     if routing != Routing::Straight {
         start.side = Some(
             start
@@ -141,7 +151,7 @@ pub fn route(routing: Routing, mut start: End, mut end: End, bends: &[f64]) -> R
             bends: Vec::new(),
         },
         Routing::Orthogonal => {
-            let (points, bends) = orthogonal(start, end, bends);
+            let (points, bends) = orthogonal(start, end, bends, obstacles);
             Routed {
                 route: Route::Polyline(points),
                 bends,
@@ -232,10 +242,10 @@ fn opposite(direction: usize) -> usize {
     (direction + 2) % 4
 }
 
-fn orthogonal(start: End, end: End, bends: &[f64]) -> (Vec<Point>, Vec<f64>) {
+fn orthogonal(start: End, end: End, bends: &[f64], extra: &[Rect]) -> (Vec<Point>, Vec<f64>) {
     let lead = lead_length(start, end);
     for stub in [lead, lead / 2.0, 0.0] {
-        let obstacles: Vec<Rect> = if stub > 0.0 {
+        let mut obstacles: Vec<Rect> = if stub > 0.0 {
             [start.bounds, end.bounds]
                 .into_iter()
                 .flatten()
@@ -245,6 +255,14 @@ fn orthogonal(start: End, end: End, bends: &[f64]) -> (Vec<Point>, Vec<f64>) {
         } else {
             Vec::new()
         };
+        obstacles.extend_from_slice(extra);
+        // A fixed lead cannot pass through an unrelated part either.
+        if extra.iter().any(|r| {
+            r.blocks(start.point, stub_point(start, stub))
+                || r.blocks(end.point, stub_point(end, stub))
+        }) {
+            continue;
+        }
         if let Some(points) = search(start, end, stub, &obstacles)
             && points.len() <= MAX_ROUTE_POINTS
         {
@@ -252,6 +270,9 @@ fn orthogonal(start: End, end: End, bends: &[f64]) -> (Vec<Point>, Vec<f64>) {
             let points = center(points, &obstacles, from, to);
             return apply_bends(points, bends, &obstacles, from, to);
         }
+    }
+    if !extra.is_empty() {
+        return orthogonal(start, end, bends, &[]);
     }
     (elbow(start, end), Vec::new())
 }
@@ -625,6 +646,56 @@ pub(crate) mod tests {
                 "zero-length segment in {points:?}"
             );
         }
+    }
+
+    #[test]
+    fn orthogonal_route_avoids_an_unrelated_box_between_parts() {
+        let start = End {
+            point: Point::new(100.0, 100.0),
+            side: Some(Side::Right),
+            bounds: Some(Rect {
+                x: 60.0,
+                y: 90.0,
+                width: 40.0,
+                height: 20.0,
+            }),
+        };
+        let end = End {
+            point: Point::new(300.0, 100.0),
+            side: Some(Side::Left),
+            bounds: Some(Rect {
+                x: 300.0,
+                y: 90.0,
+                width: 40.0,
+                height: 20.0,
+            }),
+        };
+        let obstacle = Rect {
+            x: 180.0,
+            y: 80.0,
+            width: 40.0,
+            height: 40.0,
+        }
+        .inflate(CLEARANCE);
+        let Route::Polyline(points) =
+            route_with_obstacles(Routing::Orthogonal, start, end, &[], &[obstacle]).route
+        else {
+            panic!("polyline")
+        };
+        assert_eq!(points.first(), Some(&start.point));
+        assert_eq!(points.last(), Some(&end.point));
+        assert!(
+            points
+                .windows(2)
+                .all(|pair| !obstacle.blocks(pair[0], pair[1]))
+        );
+        assert!(
+            points
+                .iter()
+                .any(|p| p.y <= obstacle.y || p.y >= obstacle.bottom())
+        );
+        assert!(points[1].x > start.point.x);
+        assert!(points[points.len() - 2].x < end.point.x);
     }
 
     #[test]

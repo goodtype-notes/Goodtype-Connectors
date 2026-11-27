@@ -16,6 +16,7 @@ use std::{
 pub const API: &str = "goodtype-api 0.1";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 const PATH_EDIT: &str = "path-edit-v0";
+const SCOPED_READS: &str = "scoped-reads-v0";
 const BATCH: &str = "page-batch-v0";
 /// The frame limit before the line delimiter.
 pub const MAX_LINE: usize = 4 * 1024 * 1024;
@@ -120,6 +121,24 @@ fn read_frame(input: &mut impl BufRead) -> Result<Option<Frame>> {
     Ok(Some(frame))
 }
 
+/// Read replies have addon-prefixed IDs and use the same bounded, duplicate-free JSON.
+fn read_response(input: &mut impl BufRead, id: &str) -> Result<Option<Value>> {
+    let mut line = Vec::new();
+    input
+        .take((MAX_LINE + 2) as u64)
+        .read_until(b'\n', &mut line)?;
+    let payload = line.strip_suffix(b"\n").ok_or("unterminated read reply")?;
+    let payload = payload.strip_suffix(b"\r").unwrap_or(payload);
+    if payload.len() > MAX_LINE {
+        return Err("oversized read reply".into());
+    }
+    let Strict(value) = serde_json::from_slice(payload)?;
+    if value["jsonrpc"] != "2.0" || value["id"] != id || value.get("error").is_some() {
+        return Ok(None);
+    }
+    Ok(value.get("result").cloned())
+}
+
 /// Positive decimal string IDs, as the host issues them.
 fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) && id.bytes().any(|b| b != b'0')
@@ -137,7 +156,7 @@ fn identity() -> Value {
     json!({"id": crate::connector::ADDON_ID, "version": VERSION})
 }
 
-/// The accepted capabilities: only `page-batch-v0`. Requests finish in milliseconds, so the
+/// Accept batch, path edits and optional scoped reads. Requests are synchronous, so the
 /// addon declines `progress` and `cancel`.
 fn initialize(params: Value) -> Option<Vec<&'static str>> {
     let params: Initialize = serde_json::from_value(params).ok()?;
@@ -147,7 +166,13 @@ fn initialize(params: Value) -> Option<Vec<&'static str>> {
         && unique.len() == params.capabilities.len()
         && unique.contains(BATCH)
         && unique.contains(PATH_EDIT);
-    ok.then(|| vec![BATCH, PATH_EDIT])
+    ok.then(|| {
+        let mut accepted = vec![BATCH, PATH_EDIT];
+        if unique.contains(SCOPED_READS) {
+            accepted.push(SCOPED_READS);
+        }
+        accepted
+    })
 }
 
 fn error(code: i32, message: &str) -> Value {
@@ -185,6 +210,7 @@ fn dispatch(method: &str, params: Value) -> Value {
 /// with an error; a refused request leaves it usable.
 pub fn run(mut input: impl BufRead, mut output: impl Write) -> Result<()> {
     let mut initialized = false;
+    let mut scoped_reads = false;
     let mut seen = HashSet::new();
     let mut id_bytes = 0;
     while let Some(frame) = read_frame(&mut input)? {
@@ -213,11 +239,51 @@ pub fn run(mut input: impl BufRead, mut output: impl Write) -> Result<()> {
                 &id,
                 json!({"result": {"apiVersion": API, "capabilities": accepted, "addon": identity()}}),
             )?;
+            scoped_reads = accepted.contains(&SCOPED_READS);
             initialized = true;
         } else if !initialized {
             return Err("request before initialization".into());
         } else {
-            reply(&mut output, &id, dispatch(&frame.method, frame.params))?;
+            let params = frame.params;
+            let mut call = 0;
+            let mut read = |data: &crate::connector::Data| {
+                if !scoped_reads {
+                    return Vec::new();
+                }
+                crate::scoped_reads::obstacles(&params, data, |method, args| {
+                    call += 1;
+                    if call > 2 {
+                        return None;
+                    }
+                    let read_id = format!("connectors-read-{call}");
+                    reply(
+                        &mut output,
+                        &read_id,
+                        json!({"method":method,"params":args}),
+                    )
+                    .ok()?;
+                    read_response(&mut input, &read_id).ok().flatten()
+                })
+                .unwrap_or_default()
+            };
+            let outcome = match frame.method.as_str() {
+                "tool/apply" => Some(
+                    addon::tool_apply_with_reads(params.clone(), &mut read)
+                        .or_else(|_| addon::tool_apply(params.clone())),
+                ),
+                "command/invoke" => Some(
+                    addon::command_invoke_with_reads(params.clone(), &mut read)
+                        .or_else(|_| addon::command_invoke(params.clone())),
+                ),
+                _ => None,
+            };
+            let body = match outcome {
+                Some(Ok(result)) => json!({"result":result}),
+                Some(Err(Refusal::Invalid(message))) => error(-32602, message),
+                Some(Err(Refusal::Failed(message))) => error(-32001, message),
+                None => dispatch(&frame.method, params),
+            };
+            reply(&mut output, &id, body)?;
         }
     }
     Ok(())

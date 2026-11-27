@@ -459,7 +459,8 @@ fn deleted_part_releases_the_end_and_keeps_the_connector() {
     assert_eq!(entry["refs"], json!(["shape-r1"]));
     assert_eq!(entry["data"]["end"], Value::Null);
     assert_eq!(entry["data"]["endPoint"], json!({"x": 300.0, "y": 172.0}));
-    assert_eq!(entry["data"]["endSide"], Value::Null);
+    assert_eq!(entry["data"]["endSide"], "left");
+    assert!(entry["data"]["endBounds"].is_null());
     let mut host = FakeHost::new(&parts_from_tool_fixture());
     host.objects.remove("shape-c2");
     host.objects.insert("addon-0f3c9a".into(), own);
@@ -572,7 +573,7 @@ fn port_drop_matches_the_contract_reply() {
                     {"point":{"x":120.0,"y":0.0},"handleIn":null,"handleOut":null}]},
                 "addonData":{"refs":["r1"],"data":{"version":2,"routing":"orthogonal",
                     "start":null,"end":{"objectId":"r1","port":0},"startPoint":{"x":40.0,"y":100.0},
-                    "endPoint":{"x":160.0,"y":100.0},"bends":[],"endSide":"left",
+                    "endPoint":{"x":160.0,"y":100.0},"bends":[],"startSide":"right","endSide":"left",
                     "endBounds":{"x":160.0,"y":90.0,"width":40.0,"height":20.0},
                     "origin":{"x":40.0,"y":100.0}}}
             }]}}
@@ -746,21 +747,22 @@ fn curved_pack_ports_infer_and_cache_sides() {
     assert_eq!(data["startSide"], "right");
     assert_eq!(data["endSide"], "left");
     let nodes = op["geometry"]["nodes"].as_array().unwrap();
-    let out = &nodes[0]["handleOut"];
-    let into = &nodes[1]["handleIn"];
+    assert_eq!(nodes.len(), 4);
+    let out = &nodes[1]["handleOut"];
+    let into = &nodes[2]["handleIn"];
     assert!(out["x"].as_f64().unwrap() > 0.0);
     assert!(into["x"].as_f64().unwrap() < 0.0);
     assert_eq!(out["y"], 0.0);
     assert_eq!(into["y"], 0.0);
     // The diagonal chord is not collinear with either horizontal port handle.
-    assert_ne!(nodes[0]["point"]["y"], nodes[1]["point"]["y"]);
+    assert_ne!(nodes[1]["point"]["y"], nodes[2]["point"]["y"]);
     FakeHost::new(&parts_from_tool_fixture())
         .apply(&reply["result"])
         .unwrap();
 }
 
 #[test]
-fn mid_page_free_curve_keeps_its_bend_after_fit() {
+fn mid_page_free_curve_has_straight_leads_after_fit() {
     let mut frame = fixture("tool-apply");
     frame["params"]["settings"] = json!({"routing": "curved", "arrow": "none"});
     frame["params"]["points"] = json!([{"x":100,"y":200},{"x":300,"y":200}]);
@@ -768,7 +770,39 @@ fn mid_page_free_curve_keeps_its_bend_after_fit() {
     let reply = one(frame);
     let op = &reply["result"]["batch"]["operations"][0];
     let nodes = op["geometry"]["nodes"].as_array().unwrap();
-    assert_eq!(nodes[0]["handleOut"]["y"], 50.0);
-    assert_eq!(nodes[1]["handleIn"]["y"], 50.0);
+    assert_eq!(nodes.len(), 4);
+    assert!(nodes[0]["handleOut"].is_null());
+    assert!(nodes[3]["handleIn"].is_null());
+    assert_eq!(nodes[1]["point"]["x"], 12.0);
+    assert_eq!(nodes[2]["point"]["x"], 188.0);
+    assert_eq!(nodes[1]["handleOut"]["y"], 0.0);
+    assert_eq!(nodes[2]["handleIn"]["y"], 0.0);
     FakeHost::new(&[]).apply(&reply["result"]).unwrap();
+}
+
+#[test]
+fn repeated_free_endpoint_edits_keep_the_cached_axis_near_the_diagonal() {
+    for routing in ["curved", "orthogonal"] {
+        let mut request = fixture("command-invoke");
+        request["params"]["edit"] = json!({"kind":"choice","value":routing});
+        request["params"]["refs"] = json!([]);
+        request["params"]["points"] = json!([
+            {"x":40,"y":100,"attach":null}, {"x":140,"y":199,"attach":null}]);
+        let mut reply = one(request.clone());
+        for y in [200.1, 199.9, 210.0, 216.0] {
+            let op = &reply["result"]["batch"]["operations"][0];
+            assert!(op["geometry"].is_object(), "{reply}");
+            request["params"]["object"]["geometry"] = op["geometry"].clone();
+            request["params"]["object"]["addonData"] = json!({"connectors":op["addonData"]});
+            request["params"]["edit"] = json!({"kind":"endpoint","end":"end"});
+            request["params"]["points"][1]["y"] = json!(y);
+            reply = one(request.clone());
+            let data = &reply["result"]["batch"]["operations"][0]["addonData"]["data"];
+            assert_eq!(
+                data["startSide"],
+                if y < 215.0 { "right" } else { "bottom" }
+            );
+            assert_eq!(data["endSide"], if y < 215.0 { "left" } else { "top" });
+        }
+    }
 }

@@ -419,9 +419,11 @@ fn endpoints(data: &mut Data) -> [Endpoint<'_>; 2] {
 
 impl Endpoint<'_> {
     fn free(&mut self, point: Point) {
+        if self.attachment.is_some() {
+            *self.side = None;
+        }
         *self.attachment = None;
         *self.point = point;
-        *self.side = None;
         *self.bounds = None;
     }
 

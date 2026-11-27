@@ -2,7 +2,7 @@
 //! route into canonical shape geometry and keeps the stored data in step with it.
 use crate::{
     geometry::{EPSILON, Point, Rect, Side},
-    route::{End, Route, Routing, route},
+    route::{End, Route, Routing, inferred_side, route},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -42,6 +42,7 @@ pub struct Attachment {
 
 /// `addonData.connectors.data`. Port sides and part bounds are cached because a reaction only
 /// carries the parts that changed; the other end keeps routing around what it last saw.
+/// Free ends reuse the side fields for dominant-axis hysteresis; their bounds stay absent.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Data {
@@ -161,17 +162,21 @@ fn shape(
             end,
             out,
             into,
+            lead_start,
+            lead_end,
         } => vec![
+            Node::plain(*start),
             Node {
-                point: *start,
+                point: *lead_start,
                 handle_in: None,
                 handle_out: Some(*out),
             },
             Node {
-                point: *end,
+                point: *lead_end,
                 handle_in: Some(*into),
                 handle_out: None,
             },
+            Node::plain(*end),
         ],
     };
     if nodes.len() < 2 {
@@ -401,6 +406,22 @@ impl Pen {
 
 /// Route `data`, store what was routed and return the shape with its origin.
 pub fn build(data: &mut Data, stroke: f64, page: Page) -> Option<(Shape, Point)> {
+    if data.routing != Routing::Straight {
+        if data.start_bounds.is_none() {
+            data.start_side = Some(inferred_side(
+                data.start_point,
+                data.end_point,
+                data.start_side,
+            ));
+        }
+        if data.end_bounds.is_none() {
+            data.end_side = Some(inferred_side(
+                data.end_point,
+                data.start_point,
+                data.end_side,
+            ));
+        }
+    }
     let (start, end) = data.ends();
     if start.point.near(end.point) || !start.point.finite() || !end.point.finite() {
         return None;
@@ -698,6 +719,37 @@ mod tests {
                     assert!(old.nodes().last().unwrap().point.y >= 1.0);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn free_sides_survive_saved_builds_across_the_diagonal() {
+        for routing in [Routing::Curved, Routing::Orthogonal] {
+            let mut d = data(
+                routing,
+                Arrow::Both,
+                End::free(Point::new(100.0, 100.0)),
+                End::free(Point::new(200.0, 199.0)),
+            );
+            for y in [199.0, 200.1, 199.9, 210.0] {
+                d.end_point.y = y;
+                let (shape, origin) = build(&mut d, 1.6, A4).unwrap();
+                assert_eq!(d.start_side, Some(Side::Right));
+                assert_eq!(d.end_side, Some(Side::Left));
+                let nodes = shape.nodes();
+                assert_eq!(nodes[0].point.y, nodes[1].point.y);
+                assert_eq!(
+                    nodes[nodes.len() - 1].point.y,
+                    nodes[nodes.len() - 2].point.y
+                );
+                validate(&shape.geometry(origin), origin.x, origin.y, 1.6, A4).unwrap();
+                let entry = d.entry();
+                d = Data::decode(entry["data"].clone()).unwrap().0;
+            }
+            d.end_point.y = 216.0;
+            build(&mut d, 1.6, A4).unwrap();
+            assert_eq!(d.start_side, Some(Side::Bottom));
+            assert_eq!(d.end_side, Some(Side::Top));
         }
     }
 

@@ -52,10 +52,12 @@ impl End {
 pub enum Route {
     /// Straight segments through these points.
     Polyline(Vec<Point>),
-    /// One cubic Bézier; handles are relative to their endpoint, as in Goodtype splines.
+    /// Straight leads surrounding one cubic; handles are relative to the lead ends.
     Curve {
         start: Point,
         end: Point,
+        lead_start: Point,
+        lead_end: Point,
         out: Point,
         into: Point,
     },
@@ -72,8 +74,16 @@ impl Route {
                 b.minus(*a).unit()
             }
             Self::Curve {
-                start, end, into, ..
-            } => into.scale(-1.0).unit().or_else(|| end.minus(*start).unit()),
+                start,
+                end,
+                lead_end,
+                into,
+                ..
+            } => end
+                .minus(*lead_end)
+                .unit()
+                .or_else(|| into.scale(-1.0).unit())
+                .or_else(|| end.minus(*start).unit()),
         }
     }
     /// Unit direction pointing backwards out of the start, i.e. how an arrow at the start points.
@@ -86,8 +96,16 @@ impl Route {
                 a.minus(*b).unit()
             }
             Self::Curve {
-                start, end, out, ..
-            } => out.scale(-1.0).unit().or_else(|| start.minus(*end).unit()),
+                start,
+                end,
+                lead_start,
+                out,
+                ..
+            } => start
+                .minus(*lead_start)
+                .unit()
+                .or_else(|| out.scale(-1.0).unit())
+                .or_else(|| start.minus(*end).unit()),
         }
     }
 }
@@ -101,7 +119,18 @@ pub struct Routed {
 
 /// Route a connector. `bends` are offsets of an orthogonal route's middle segments from their
 /// automatic position; they are kept only while the route keeps the same shape and stays clear.
-pub fn route(routing: Routing, start: End, end: End, bends: &[f64]) -> Routed {
+pub fn route(routing: Routing, mut start: End, mut end: End, bends: &[f64]) -> Routed {
+    if routing != Routing::Straight {
+        start.side = Some(
+            start
+                .side
+                .unwrap_or_else(|| inferred_side(start.point, end.point, None)),
+        );
+        end.side = Some(
+            end.side
+                .unwrap_or_else(|| inferred_side(end.point, start.point, None)),
+        );
+    }
     match routing {
         Routing::Straight => Routed {
             route: Route::Polyline(vec![start.point, end.point]),
@@ -121,25 +150,64 @@ pub fn route(routing: Routing, start: End, end: End, bends: &[f64]) -> Routed {
     }
 }
 
+/// Keep the previous axis until the other axis is over 15% larger. The sign always
+/// faces the other endpoint, including when it crosses the start.
+pub fn inferred_side(point: Point, other: Point, previous: Option<Side>) -> Side {
+    let span = other.minus(point);
+    let horizontal = match previous {
+        Some(Side::Left | Side::Right) => span.y.abs() <= span.x.abs() * 1.15,
+        Some(Side::Top | Side::Bottom) => span.x.abs() > span.y.abs() * 1.15,
+        None => span.x.abs() >= span.y.abs(),
+    };
+    if horizontal {
+        if span.x < 0.0 {
+            Side::Left
+        } else {
+            Side::Right
+        }
+    } else if span.y < 0.0 {
+        Side::Top
+    } else {
+        Side::Bottom
+    }
+}
+
+fn lead_length(start: End, end: End) -> f64 {
+    (end.point.minus(start.point).length() * 0.2).min(CLEARANCE)
+}
+
 fn curved(start: End, end: End) -> Route {
     let span = end.point.minus(start.point);
-    let reach = (span.length() * 0.45).clamp(10.0, 160.0);
-    // A fixed perpendicular orientation stays continuous while a free end is dragged.
-    let bend = Point::new(-span.y, span.x)
-        .unit()
-        .unwrap_or_default()
-        .scale((span.length() * 0.25).min(80.0));
-    let out = start.side.map_or(span.scale(1.0 / 3.0).plus(bend), |side| {
-        side.normal().scale(reach)
-    });
-    let into = end.side.map_or(span.scale(-1.0 / 3.0).plus(bend), |side| {
-        side.normal().scale(reach)
-    });
+    let length = span.length();
+    let a = start.side.unwrap().normal();
+    let b = end.side.unwrap().normal();
+    let dot = |a: Point, b: Point| a.x * b.x + a.y * b.y;
+    // At very close, opposing/away-facing ports cannot fit a sensible turn.
+    if length <= 4.0 * EPSILON
+        || (length < 2.0 * CLEARANCE && (dot(a, span) < 0.0 || dot(b, span) > 0.0))
+    {
+        return Route::Polyline(vec![start.point, end.point]);
+    }
+    let lead = lead_length(start, end);
+    let lead_start = start.point.plus(a.scale(lead));
+    let lead_end = end.point.plus(b.scale(lead));
+    let middle = lead_end.minus(lead_start);
+    let mut reach = (middle.length() * 0.4).min(160.0);
+    // For facing ends, keep control points ordered on the chord: no overshoot
+    // even when one coordinate is small or the connector is very short.
+    for normal in [a, b.scale(-1.0)] {
+        let projection = dot(normal, middle);
+        if projection > EPSILON {
+            reach = reach.min(projection * 0.5);
+        }
+    }
     Route::Curve {
         start: start.point,
         end: end.point,
-        out,
-        into,
+        lead_start,
+        lead_end,
+        out: a.scale(reach),
+        into: b.scale(reach),
     }
 }
 
@@ -165,7 +233,8 @@ fn opposite(direction: usize) -> usize {
 }
 
 fn orthogonal(start: End, end: End, bends: &[f64]) -> (Vec<Point>, Vec<f64>) {
-    for stub in [CLEARANCE, CLEARANCE / 2.0, 0.0] {
+    let lead = lead_length(start, end);
+    for stub in [lead, lead / 2.0, 0.0] {
         let obstacles: Vec<Rect> = if stub > 0.0 {
             [start.bounds, end.bounds]
                 .into_iter()
@@ -187,7 +256,8 @@ fn orthogonal(start: End, end: End, bends: &[f64]) -> (Vec<Point>, Vec<f64>) {
     (elbow(start, end), Vec::new())
 }
 
-/// Where the connector leaves (or reaches) an attached part: `stub` beyond the part's edge on
+/// A free end's inferred side gets the same short stub as a port. For an attached end,
+/// the connector leaves (or reaches) `stub` beyond the part's edge on
 /// the port's side, along the side's normal. A port inside the part's outline (a lead end that
 /// does not touch the bounds) still clears the part.
 fn stub_point(end: End, stub: f64) -> Point {
@@ -659,17 +729,49 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn free_ends_route_without_stubs() {
+    fn free_ends_route_with_balanced_z_leads() {
         let start = End::free(Point::new(10.0, 10.0));
         let end = End::free(Point::new(80.0, 50.0));
         let points = polyline(&route(Routing::Orthogonal, start, end, &[])).to_vec();
         assert_orthogonal(&points, start, end);
-        assert_eq!(points.len(), 3);
+        assert_eq!(
+            points,
+            vec![
+                start.point,
+                Point::new(45.0, 10.0),
+                Point::new(45.0, 50.0),
+                end.point
+            ]
+        );
         let aligned = End::free(Point::new(80.0, 10.0));
         assert_eq!(
             polyline(&route(Routing::Orthogonal, start, aligned, &[])),
             [start.point, aligned.point]
         );
+    }
+
+    #[test]
+    fn short_free_orthogonal_routes_keep_ordered_leads_in_every_quadrant() {
+        for dx in [-0.01_f64, 0.01, -20.0, 20.0] {
+            for dy in [-0.02_f64, 0.02, -10.0, 10.0] {
+                let start = End::free(Point::new(100.0, 100.0));
+                let end = End::free(start.point.plus(Point::new(dx, dy)));
+                let points = polyline(&route(Routing::Orthogonal, start, end, &[])).to_vec();
+                assert_orthogonal(&points, start, end);
+                assert_eq!(points.len(), 4);
+                for pair in points.windows(2) {
+                    let v = pair[1].minus(pair[0]);
+                    assert!(v.x * dx >= -EPSILON && v.y * dy >= -EPSILON);
+                }
+                assert!(
+                    points[1]
+                        .minus(points[0])
+                        .unit()
+                        .unwrap()
+                        .near(inferred_side(start.point, end.point, None).normal())
+                );
+            }
+        }
     }
 
     #[test]
@@ -683,11 +785,21 @@ pub(crate) mod tests {
             end: e,
             out,
             into,
+            lead_start,
+            lead_end,
         } = route(Routing::Curved, start, end, &[]).route
         else {
             panic!()
         };
         assert_eq!((s, e), (start.point, end.point));
+        assert!(
+            lead_start
+                .minus(s)
+                .unit()
+                .unwrap()
+                .near(out.unit().unwrap())
+        );
+        assert!(lead_end.minus(e).unit().unwrap().near(into.unit().unwrap()));
         assert!(out.x > 0.0 && out.y == 0.0);
         assert!(into.y < 0.0 && into.x == 0.0);
         let free = route(
@@ -696,29 +808,110 @@ pub(crate) mod tests {
             End::free(Point::new(30.0, 0.0)),
             &[],
         );
-        assert!(free.route.arrival().unwrap().y < 0.0);
+        assert_eq!(free.route.arrival(), Some(Point::new(1.0, 0.0)));
     }
 
     #[test]
-    fn free_curves_bend_deterministically_without_drag_flips() {
+    fn free_curves_have_collinear_tangent_leads_without_sideways_bend() {
         let start = End::free(Point::new(100.0, 100.0));
         for point in [
             Point::new(300.0, 100.0),
-            Point::new(300.0, 99.9),
-            Point::new(300.0, 100.1),
-            Point::new(100.0, 300.0),
+            Point::new(300.0, 160.0),
+            Point::new(140.0, 300.0),
+            Point::new(100.01, 100.02),
         ] {
             let end = End::free(point);
             let result = route(Routing::Curved, start, end, &[]);
             assert_eq!(result, route(Routing::Curved, start, end, &[]));
-            let Route::Curve { out, into, .. } = result.route else {
+            let Route::Curve {
+                lead_start,
+                lead_end,
+                out,
+                into,
+                ..
+            } = result.route
+            else {
                 panic!()
             };
-            let span = point.minus(start.point);
-            for handle in [out, into] {
-                assert!(span.x * handle.y - span.y * handle.x > EPSILON);
-            }
+            let a = lead_start.minus(start.point);
+            let b = lead_end.minus(end.point);
+            assert!(a.length() <= CLEARANCE && b.length() <= CLEARANCE);
+            assert!(a.unit().unwrap().near(out.unit().unwrap()));
+            assert!(b.unit().unwrap().near(into.unit().unwrap()));
+            assert!(
+                a.unit()
+                    .unwrap()
+                    .near(inferred_side(start.point, point, None).normal())
+            );
+            assert!(
+                result
+                    .route
+                    .arrival()
+                    .unwrap()
+                    .near(b.unit().unwrap().scale(-1.0))
+            );
+            assert!(
+                result
+                    .route
+                    .departure_reversed()
+                    .unwrap()
+                    .near(a.unit().unwrap().scale(-1.0))
+            );
+            // Ordered controls along the chosen axis prevent loops or doubling back.
+            let n = a.unit().unwrap();
+            let dot = |p: Point| p.x * n.x + p.y * n.y;
+            let controls = [
+                start.point,
+                lead_start,
+                lead_start.plus(out),
+                lead_end.plus(into),
+                lead_end,
+                end.point,
+            ];
+            assert!(
+                controls
+                    .windows(2)
+                    .all(|w| dot(w[1].minus(w[0])) >= -EPSILON)
+            );
         }
+    }
+
+    #[test]
+    fn inferred_sides_have_diagonal_hysteresis() {
+        let p = Point::default();
+        let mut side = None;
+        for y in [99.0, 100.1, 99.9, 110.0] {
+            side = Some(inferred_side(p, Point::new(100.0, y), side));
+            assert_eq!(side, Some(Side::Right));
+        }
+        side = Some(inferred_side(p, Point::new(100.0, 116.0), side));
+        assert_eq!(side, Some(Side::Bottom));
+        for y in [100.1, 99.9, 90.0] {
+            side = Some(inferred_side(p, Point::new(100.0, y), side));
+            assert_eq!(side, Some(Side::Bottom));
+        }
+        assert_eq!(
+            inferred_side(p, Point::new(116.0, 100.0), side),
+            Side::Right
+        );
+    }
+
+    #[test]
+    fn close_away_facing_ports_degrade_to_a_line() {
+        let start = End {
+            point: Point::new(20.0, 20.0),
+            side: Some(Side::Left),
+            bounds: None,
+        };
+        let end = End {
+            point: Point::new(21.0, 20.0),
+            side: Some(Side::Right),
+            bounds: None,
+        };
+        assert_eq!(
+            route(Routing::Curved, start, end, &[]).route,
+            Route::Polyline(vec![start.point, end.point])
+        );
     }
 
     /// A small deterministic generator, so property tests need no extra dependency.

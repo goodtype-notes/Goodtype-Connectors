@@ -16,8 +16,10 @@ side dock or in a narrow window, press the active Connect tool again to find tho
 choices in its settings. The stroke pocket sets the connector's colour and width.
 Its tool card sets the pattern, spacing and opacity.
 
+Curved connectors have short straight leads joined by a smooth S-curve. Orthogonal connectors use leads at both ends, usually forming a balanced Z. Aligned free ends stay straight; very short routes use shorter leads.
+
 Deleting a connected part leaves the connector in place and releases that end. Saved connectors remain editable Goodtype shapes. **Detach from Connectors** removes the connection data and keeps the drawing.
 
 Connectors needs permission to edit the objects it owns and react when attached objects change. Routing runs on your device through Goodtype's local addon session.
 
-Connectors 0.2.1 declares `requires: ["end-caps", "path-edit-v0"]` in its manifest. Do not release it before a Goodtype host with P1 is published; released v0.3.x hosts reject this field. Legacy heads stay as saved until a successful upgrade. If Goodtype reports that a legacy drawing needs review, you can detach it and edit the saved drawing as an ordinary shape.
+Connectors 0.2.2 declares `requires: ["end-caps", "path-edit-v0"]` in its manifest. Do not release it before a Goodtype host with P1 is published; released v0.3.x hosts reject this field. Legacy heads stay as saved until a successful upgrade. If Goodtype reports that a legacy drawing needs review, you can detach it and edit the saved drawing as an ordinary shape.

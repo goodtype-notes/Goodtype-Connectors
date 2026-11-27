@@ -35,7 +35,8 @@
       "requires": [
         "end-caps",
         "group-stretch",
-        "path-edit-v0"
+        "path-edit-v0",
+        "scoped-reads-v0"
       ]
     }
   },
